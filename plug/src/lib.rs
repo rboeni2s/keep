@@ -14,6 +14,9 @@ pub mod prelude
     pub use crate::registry::{Layer, Registry};
     pub use crate::resolver::Resolver;
     pub use crate::static_context;
+
+    #[cfg(feature = "macro")]
+    pub use proc_layer::{build_reg, service};
 }
 
 
@@ -174,7 +177,7 @@ mod tests
             Fight,
         }
 
-        #[proc_layer::layer_struct]
+        #[proc_layer::service]
         struct Chogath<Action>
         {
             #[default]
@@ -192,7 +195,7 @@ mod tests
 
         impl SimpleDispatch<Action> for Chogath {}
 
-        #[proc_layer::layer_struct]
+        #[proc_layer::service]
         struct Gwen<Action>
         {
             #[layer]

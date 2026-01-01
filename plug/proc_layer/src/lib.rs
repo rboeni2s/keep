@@ -123,6 +123,7 @@ impl Parse for LayerStruct
     {
         let content;
         let visibility = syn::Visibility::parse(input)?;
+        syn::Attribute::parse_outer(input)?;
         input.parse::<syn::Token![struct]>()?;
         let name = syn::Ident::parse(input)?;
         let generics = Generics::parse(input).map(Some).unwrap_or(None);
@@ -201,8 +202,19 @@ impl ToTokens for DefaultInitializer
     {
         let DefaultInitializer(SimpleField { ident, kind }) = self;
 
+        let mut kind = kind.clone();
+        let mut suffix = None;
+
+        if let syn::Type::Path(syn::TypePath { ref mut path, .. }) = kind
+        {
+            suffix = path
+                .segments
+                .pop()
+                .map(|segment| segment.value().ident.clone());
+        }
+
         tokens.extend(quote! {
-            #ident: #kind::default()
+            #ident: #kind #suffix ::default()
         });
     }
 }
@@ -223,7 +235,7 @@ impl ToTokens for DataInitializer
 
 
 #[proc_macro_attribute]
-pub fn layer_struct(attr: TokenStream, input: TokenStream) -> TokenStream
+pub fn service(attr: TokenStream, input: TokenStream) -> TokenStream
 {
     let custom_context_identifier: Option<syn::Ident> =
         syn::parse(attr).expect("Optional context identifier must be a valid identifier");

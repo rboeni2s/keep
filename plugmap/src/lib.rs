@@ -1,14 +1,14 @@
 #![allow(unused)]
 
 
-mod dynbuff;
+mod dynbuf;
 mod entry;
 mod map;
 mod resizer;
 mod table;
 
 
-pub use dynbuff::ConcurrentBuffer;
+pub use dynbuf::ConcurrentBuffer;
 pub use map::PlugMap;
 
 

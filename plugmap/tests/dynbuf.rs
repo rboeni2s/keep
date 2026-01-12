@@ -35,7 +35,7 @@ fn concurrent_buffer_put()
 
     for i in 0..5
     {
-        assert_eq!(Ok(i), buf.put(i));
+        assert_eq!(Some(i), buf.put(i).ok());
     }
 
     assert_eq!(Some(3), buf.get(3).map(|g| *g));
@@ -47,7 +47,7 @@ fn concurrent_buffer_put()
 fn dynbuf_st()
 {
     let buffer = DynBuffer::new();
-    let og = (0..32).collect::<Vec<_>>();
+    let og = (0..256).collect::<Vec<_>>();
 
     for i in &og
     {
@@ -69,7 +69,7 @@ fn dynbuf_st()
 #[test]
 fn dynbuf_mt()
 {
-    let buffer = Guard::new(DynBuffer::with_hint(6));
+    let buffer = Guard::new(DynBuffer::new());
     let original = (0..32).collect::<Vec<_>>();
 
 

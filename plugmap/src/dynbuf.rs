@@ -106,18 +106,24 @@ impl<T> ConcurrentBuffer<T>
     ///
     /// # Returns
     /// * `Ok(index)` if the element was inserted successfully where `index` indicates the position of `e`
-    /// * `Err(())` if the buffer has no free slot left
-    #[allow(clippy::result_unit_err)] // I want the returned result to be an error if the buffer is full,
-    //                                   because inserting without removing an old element failed.
-    //                                   this error however has no value and that's why a unit err result is fine here.
-    pub fn put(&self, e: impl Heaped<T>) -> Result<usize, ()>
+    /// * `Err(e)` if the buffer has no free slot left. E is the item passed as `e`.
+    pub fn put(&self, e: impl Heaped<T>) -> Result<usize, Keep<T>>
     {
-        let keep = Keep::new(Some(Keep::new(e)));
+        self.put_keep(Keep::new(e))
+    }
+
+    fn put_keep(&self, keep: Keep<T>) -> Result<usize, Keep<T>>
+    {
+        let wrapped_keep = Keep::new(Some(keep.clone()));
         let last_index = self.last_index.fetch_add(1, Ordering::AcqRel);
-        let (e, marker) = self.buffer.get(last_index).ok_or(())?.read_marked();
+        let (e, marker) = self
+            .buffer
+            .get(last_index)
+            .ok_or(keep.clone())?
+            .read_marked();
 
         // if the slot is free, try to insert into this slot
-        if e.is_none() && self.buffer[last_index].swap_with_marked(marker, &keep)
+        if e.is_none() && self.buffer[last_index].swap_with_marked(marker, &wrapped_keep)
         // not using get(index) is okay here, since i already know this index exists
         {
             // Swap worked!
@@ -130,7 +136,7 @@ impl<T> ConcurrentBuffer<T>
             let (e, marker) = slot.read_marked();
 
             // if the slot is free, try to insert into this slot
-            if e.is_none() && slot.swap_with_marked(marker, &keep)
+            if e.is_none() && slot.swap_with_marked(marker, &wrapped_keep)
             {
                 // The swap worked, set last index and return the index of the new element
                 self.last_index.store(i + 1, Ordering::Release);
@@ -139,7 +145,7 @@ impl<T> ConcurrentBuffer<T>
         }
 
         // No free slot was found, error out
-        Err(())
+        Err(keep)
     }
 
     /// Gives a hint to the buffer, that the next free index is `next_free`
@@ -155,10 +161,9 @@ pub struct DynBuffer<T>
 {
     min_size: usize,
     buffer: Keep<ConcurrentBuffer<T>>,
-    new_buffer: Keep<Option<Keep<ConcurrentBuffer<T>>>>,
-    resizer: Keep<Option<Resizer<T>>>,
+    resize_buffer: Keep<ConcurrentBuffer<T>>,
+    resize_flag: AtomicBool,
     count: AtomicUsize,
-    readers: AtomicUsize,
 }
 
 
@@ -183,123 +188,127 @@ impl<T> DynBuffer<T>
             buffer: Keep::new(ConcurrentBuffer::with_capacity(
                 1 << hint.max(Self::MIN_SIZE),
             )),
-            new_buffer: Keep::new(None),
-            resizer: Keep::new(None),
+            resize_buffer: Keep::new(ConcurrentBuffer::with_capacity(0)),
+            resize_flag: AtomicBool::new(false),
             count: AtomicUsize::new(0),
-            readers: AtomicUsize::new(0),
         }
     }
 
     /// Pushes a value `val` into the buffer
     pub fn push(&self, val: impl Heaped<T>)
     {
-        // Help with resizing if a resize is ongoing...
-        self.maybe_resize();
+        let mut val = Keep::new(val);
 
-        let count = self.count.fetch_add(1, Ordering::AcqRel);
-
-        self.consider_resize(count);
+        loop
         {
+            // Help with resizing if a resize is ongoing...
             self.maybe_resize();
-        }
 
-        self.buffer.read().put(val);
+            if let Err(v) = self.buffer.read().put_keep(val)
+            {
+                let count = self.count.load(Ordering::Acquire);
+                self.consider_resize(count + 1);
+                val = v;
+                continue;
+            }
+
+            self.count.fetch_add(1, Ordering::AcqRel);
+            break;
+        }
     }
 
     /// Pops a value from the buffer
     pub fn pop(&self) -> Option<Keep<T>>
     {
-        if self.count.load(Ordering::Acquire) == 0
+        loop
         {
-            return None;
+            if self.count.load(Ordering::Acquire) == 0
+            {
+                return None;
+            }
+
+            // Help with ongoing resize
+            self.maybe_resize();
+
+            // Try to pop an item
+            let ret = self.buffer.read().pop();
+
+            // If something was popped of, adjust size and return
+            if ret.is_some()
+            {
+                let count = self.count.fetch_sub(1, Ordering::AcqRel);
+                self.consider_resize(count);
+                return ret;
+            }
         }
-
-        // Help with ongoing resize
-        self.maybe_resize();
-
-        self.readers.fetch_add(1, Ordering::Release);
-
-        let mut ret = self.buffer.read().pop();
-
-        // If something was popped of, adjust size
-        if ret.is_some()
-        {
-            self.count.fetch_sub(1, Ordering::Release);
-        }
-
-        self.readers.fetch_sub(1, Ordering::Release);
-
-        ret
     }
-
 
     fn consider_resize(&self, index: usize) -> bool
     {
         let mut buf = None;
         let capacity = self.buffer.read().capacity;
-        let new_buffer = self.new_buffer.read();
+        let new_buffer = self.resize_buffer.read();
 
-        if new_buffer.is_none()
+        // instant return if resize is ongoing
+        if self.resize_flag.load(Ordering::Acquire)
         {
-            // Do a resize up if the buffer is almost full
-            if capacity <= index + 2
-            {
-                buf = Some(Keep::new(ConcurrentBuffer::with_capacity(capacity << 1)));
-            }
-            // Do a resize down if the buffer is less than half full
-            else if (capacity >> 1) > index && capacity > (1 << self.min_size)
-            {
-                buf = Some(Keep::new(ConcurrentBuffer::with_capacity(capacity >> 1)));
-            }
-
-            // If a resize is needed, try to build a resizer
-            if let Some(new) = &buf
-            {
-                let new = new.read();
-                if self.new_buffer.exchange(&new_buffer, buf).is_ok()
-                {
-                    let curr = self.buffer.read();
-                    let resizer = Resizer::new(8, curr, new);
-                    self.resizer.write(Some(resizer));
-
-                    return true;
-                }
-            }
+            return true;
         }
 
-        self.new_buffer.read().is_some()
+        // Do a resize up if the buffer is almost full
+        if capacity <= index + 1
+        {
+            buf = Some(ConcurrentBuffer::with_capacity(capacity << 1));
+        }
+        // Do a resize down if the buffer is less than half full - 2
+        else if (capacity >> 1) - 2 > index && capacity > (1 << self.min_size)
+        {
+            buf = Some(ConcurrentBuffer::with_capacity(capacity >> 1));
+        }
+
+        if let Some(buf) = buf
+            && self
+                .resize_flag
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+        {
+            // Update resize buffer
+            self.resize_buffer.write(buf);
+            // Swap the buffers
+            self.buffer.swap_with(&self.resize_buffer);
+
+            return true;
+        }
+
+        false
     }
 
     fn maybe_resize(&self)
     {
-        // If a resize is in progress...
-        if let Some(resizer) = &*self.resizer.read()
+        let mut resizing = self.resize_flag.load(Ordering::Acquire);
+
+        let old_buffer = self.resize_buffer.read();
+        let buffer = self.buffer.read();
+
+        while resizing
         {
-            // wait for all pop operations to finish
-            while self.readers.load(Ordering::Acquire) != 0
+            match old_buffer.pop()
             {
-                std::hint::spin_loop();
-            }
-
-            // ...help resizing
-            resizer.resize();
-
-            // Check if this thread needs to swap the buffers
-            if resizer.do_swap()
-            {
-                // Swap the buffers and destroy the resizer
-                if let Some(new_buffer) = &*self.new_buffer.swap(None)
+                Some(val) => _ = buffer.put_keep(val),
+                None =>
                 {
-                    self.buffer.swap_with(new_buffer);
-                    self.resizer.write(None);
+                    if self
+                        .resize_flag
+                        .compare_exchange_weak(true, false, Ordering::AcqRel, Ordering::Relaxed)
+                        .is_ok()
+                    {
+                        self.resize_buffer.write(ConcurrentBuffer::with_capacity(0));
+                        break;
+                    }
                 }
             }
 
-            // spin until the entire resize is complete
-            while self.resizer.read().is_some()
-            {
-                std::hint::spin_loop();
-            }
+            resizing = self.resize_flag.load(Ordering::Acquire);
         }
     }
 }
@@ -316,8 +325,8 @@ impl<T> Default for DynBuffer<T>
 
 struct Resizer<T>
 {
-    current: Guard<ConcurrentBuffer<T>>,
-    new: Guard<ConcurrentBuffer<T>>,
+    from: Guard<ConcurrentBuffer<T>>,
+    to: Guard<ConcurrentBuffer<T>>,
     length: usize,
     current_index: AtomicUsize,
     new_index: AtomicUsize,
@@ -329,18 +338,15 @@ struct Resizer<T>
 
 impl<T> Resizer<T>
 {
-    fn new(
-        stride: usize,
-        current: Guard<ConcurrentBuffer<T>>,
-        new: Guard<ConcurrentBuffer<T>>,
-    ) -> Self
+    fn new(stride: usize, from: Guard<ConcurrentBuffer<T>>, to: Guard<ConcurrentBuffer<T>>)
+    -> Self
     {
         // Find the smallest capacity to determine the length of the resize
-        let length = current.capacity.min(new.capacity);
+        let length = from.capacity.min(to.capacity);
 
         Self {
-            current,
-            new,
+            from,
+            to,
             length,
             stride,
             workers: AtomicUsize::new(0),
@@ -365,26 +371,26 @@ impl<T> Resizer<T>
 
         // Set the start and end bounds.
         let mut start = self.current_index.fetch_add(self.stride, Ordering::AcqRel);
-        let mut end = self.current.capacity.min(start + self.stride);
+        let mut end = self.from.capacity.min(start + self.stride);
 
         // Until start would be out of bounds and the smallest slot size of both buffers has not yet been reached...
         while start < end && self.new_index.load(Ordering::Acquire) < self.length
         {
             // ...read all elements of a stride in the current buffer...
-            for entry in &self.current.buffer[start..end]
+            for entry in &self.from.buffer[start..end]
             {
                 // ...and copy them into the new buffer if they are not empty.
                 if let Some(old_entry) = &*entry.read()
                 {
                     let new_index = self.new_index.fetch_add(1, Ordering::AcqRel);
                     let entry = Some(old_entry.clone());
-                    self.new.buffer[new_index].write(entry);
+                    self.to.buffer[new_index].write(entry);
                 }
             }
 
             // Set the start and end bounds for the next stride
             start = self.current_index.fetch_add(self.stride, Ordering::AcqRel);
-            end = self.current.capacity.min(start + self.stride);
+            end = self.from.capacity.min(start + self.stride);
         }
 
         // work is done, decrease worker count and spin until no workers remain

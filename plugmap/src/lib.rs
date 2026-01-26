@@ -1,4 +1,5 @@
 #![allow(unused)]
+#![feature(iter_collect_into)]
 
 
 mod dynbuf;

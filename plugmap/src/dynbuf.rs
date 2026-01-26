@@ -197,8 +197,11 @@ impl<T> DynBuffer<T>
     /// Pushes a value `val` into the buffer
     pub fn push(&self, val: impl Heaped<T>)
     {
-        let mut val = Keep::new(val);
+        self.push_keep(Keep::new(val));
+    }
 
+    fn push_keep(&self, mut val: Keep<T>)
+    {
         loop
         {
             // Help with resizing if a resize is ongoing...
@@ -286,15 +289,15 @@ impl<T> DynBuffer<T>
     fn maybe_resize(&self)
     {
         let mut resizing = self.resize_flag.load(Ordering::Acquire);
-
         let old_buffer = self.resize_buffer.read();
-        let buffer = self.buffer.read();
+        let (buffer, marker) = self.buffer.read_marked();
 
         while resizing
         {
             match old_buffer.pop()
             {
-                Some(val) => _ = buffer.put_keep(val),
+                Some(val) => _ = buffer.put_keep(val), // this will not fail
+
                 None =>
                 {
                     if self
@@ -302,7 +305,8 @@ impl<T> DynBuffer<T>
                         .compare_exchange_weak(true, false, Ordering::AcqRel, Ordering::Relaxed)
                         .is_ok()
                     {
-                        self.resize_buffer.write(ConcurrentBuffer::with_capacity(0));
+                        // Something is not right here...
+                        // self.resize_buffer.write(ConcurrentBuffer::with_capacity(0));
                         break;
                     }
                 }
@@ -310,6 +314,34 @@ impl<T> DynBuffer<T>
 
             resizing = self.resize_flag.load(Ordering::Acquire);
         }
+    }
+
+    /// Generates a snapshot of the buffer
+    pub fn snapshot(&self) -> Snapshot<T>
+    {
+        self.maybe_resize();
+        Snapshot::from(&*self.buffer.read())
+    }
+
+    /// Clears the buffer and returns it's contents
+    pub fn flush(&self, max: Option<usize>) -> Vec<Keep<T>>
+    {
+        let max = max.unwrap_or(usize::MAX);
+        let mut count = 0;
+        let mut buffer = Vec::with_capacity(self.buffer.read().capacity);
+
+        while let Some(item) = self.pop()
+        {
+            buffer.push(item);
+            count += 1;
+
+            if count >= max
+            {
+                break;
+            }
+        }
+
+        buffer
     }
 }
 
@@ -323,81 +355,43 @@ impl<T> Default for DynBuffer<T>
 }
 
 
-struct Resizer<T>
+/// Represents a snapshot of a concurrent buffer
+pub struct Snapshot<T>
 {
-    from: Guard<ConcurrentBuffer<T>>,
-    to: Guard<ConcurrentBuffer<T>>,
-    length: usize,
-    current_index: AtomicUsize,
-    new_index: AtomicUsize,
-    stride: usize,
-    workers: AtomicUsize,
-    swapped: AtomicBool,
+    st_buffer: Vec<Guard<T>>,
 }
 
 
-impl<T> Resizer<T>
+impl<T> AsMut<Vec<Guard<T>>> for Snapshot<T>
 {
-    fn new(stride: usize, from: Guard<ConcurrentBuffer<T>>, to: Guard<ConcurrentBuffer<T>>)
-    -> Self
+    fn as_mut(&mut self) -> &mut Vec<Guard<T>>
     {
-        // Find the smallest capacity to determine the length of the resize
-        let length = from.capacity.min(to.capacity);
-
-        Self {
-            from,
-            to,
-            length,
-            stride,
-            workers: AtomicUsize::new(0),
-            current_index: AtomicUsize::new(0),
-            new_index: AtomicUsize::new(0),
-            swapped: AtomicBool::new(false),
-        }
+        &mut self.st_buffer
     }
+}
 
-    /// Returns `true` once, after that always `false`. Can be used to determine which
-    /// thread is allowed to swap the old buffer with the resized one after the resize is complete...
-    fn do_swap(&self) -> bool
+
+impl<T> AsRef<Vec<Guard<T>>> for Snapshot<T>
+{
+    fn as_ref(&self) -> &Vec<Guard<T>>
     {
-        !self.swapped.swap(true, Ordering::SeqCst)
+        &self.st_buffer
     }
+}
 
-    /// Makes this thread help with the resize, will block until resize is complete
-    fn resize(&self)
+
+impl<T> From<&ConcurrentBuffer<T>> for Snapshot<T>
+{
+    fn from(value: &ConcurrentBuffer<T>) -> Self
     {
-        // increase worker counter by one
-        self.workers.fetch_add(1, Ordering::Release);
+        let mut st_buffer = Vec::with_capacity(value.capacity);
 
-        // Set the start and end bounds.
-        let mut start = self.current_index.fetch_add(self.stride, Ordering::AcqRel);
-        let mut end = self.from.capacity.min(start + self.stride);
+        value
+            .buffer
+            .iter()
+            .filter_map(|e| e.read().as_ref().as_ref().map(|g| g.read()))
+            .collect_into(&mut st_buffer);
 
-        // Until start would be out of bounds and the smallest slot size of both buffers has not yet been reached...
-        while start < end && self.new_index.load(Ordering::Acquire) < self.length
-        {
-            // ...read all elements of a stride in the current buffer...
-            for entry in &self.from.buffer[start..end]
-            {
-                // ...and copy them into the new buffer if they are not empty.
-                if let Some(old_entry) = &*entry.read()
-                {
-                    let new_index = self.new_index.fetch_add(1, Ordering::AcqRel);
-                    let entry = Some(old_entry.clone());
-                    self.to.buffer[new_index].write(entry);
-                }
-            }
-
-            // Set the start and end bounds for the next stride
-            start = self.current_index.fetch_add(self.stride, Ordering::AcqRel);
-            end = self.from.capacity.min(start + self.stride);
-        }
-
-        // work is done, decrease worker count and spin until no workers remain
-        let mut workers = self.workers.fetch_sub(1, Ordering::AcqRel) - 1;
-        while workers != 0
-        {
-            workers = self.workers.load(Ordering::Acquire);
-        }
+        Self { st_buffer }
     }
 }

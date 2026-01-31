@@ -2,7 +2,7 @@
 
 
 use proc_macro::TokenStream;
-use quote::{ToTokens, format_ident, quote};
+use quote::{ToTokens, quote};
 use syn::{parse::Parse, punctuated::Punctuated, spanned::Spanned};
 
 
@@ -23,10 +23,20 @@ struct SimpleField
 }
 
 
+#[derive(Clone)]
+struct EventField
+{
+    event: syn::Ident,
+    ident: syn::Ident,
+    kind: syn::Type,
+}
+
+
 enum Field
 {
     Layer(SimpleField),
     Default(SimpleField),
+    Event(EventField),
     Data(DataField),
 }
 
@@ -46,6 +56,18 @@ impl Parse for Field
         {
             syn::Meta::List(meta_list) =>
             {
+                let path = meta_list.path.require_ident()?;
+
+                if path == "event"
+                {
+                    let event = meta_list.parse_args::<syn::Ident>()?;
+                    return Ok(Self::Event(EventField {
+                        event,
+                        ident: field.ident.unwrap(),
+                        kind: field.ty,
+                    }));
+                }
+
                 Err(syn::Error::new(meta_list.span(), "unexpected attribute"))
             }
 
@@ -98,6 +120,7 @@ impl ToTokens for Field
             Field::Layer(SimpleField { ident, kind }) => quote! {#ident: Layer<#kind>},
             Field::Default(SimpleField { ident, kind }) => quote! {#ident: #kind},
             Field::Data(DataField { ident, kind, .. }) => quote! {#ident: #kind},
+            Field::Event(EventField { ident, kind, .. }) => quote! {#ident: Guard<#kind>},
         };
 
         tokens.extend(stream);
@@ -192,6 +215,23 @@ impl LayerStruct
             })
             .collect()
     }
+
+    pub fn event_fields(&self) -> Vec<&EventField>
+    {
+        self.fields
+            .iter()
+            .filter_map(|e| {
+                if let Field::Event(event) = e
+                {
+                    Some(event)
+                }
+                else
+                {
+                    None
+                }
+            })
+            .collect()
+    }
 }
 
 
@@ -234,23 +274,39 @@ impl ToTokens for DataInitializer
 }
 
 
-#[proc_macro_attribute]
-pub fn service(attr: TokenStream, input: TokenStream) -> TokenStream
+struct EventInitializer(EventField);
+impl ToTokens for EventInitializer
 {
-    let custom_context_identifier: Option<syn::Ident> =
-        syn::parse(attr).expect("Optional context identifier must be a valid identifier");
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream)
+    {
+        let EventInitializer(EventField { event, ident, .. }) = self;
 
+        tokens.extend(quote! {
+            #ident: reg.get_unchecked::<EventEmitter<#event>>().subscribe()
+        });
+    }
+}
+
+
+#[proc_macro_attribute]
+pub fn service(_attr: TokenStream, input: TokenStream) -> TokenStream
+{
     let layer_struct: LayerStruct = syn::parse(input).expect("Failed to parse layer struct");
 
     let layer_fields = layer_struct.layer_fields();
-    let layer_field_deps = layer_fields.iter().map(|l| l.kind.clone());
+
+    let layer_field_deps = layer_fields.iter().map(|l| {
+        l.kind.clone()
+    });
+
     let layer_field_names = layer_fields.iter().map(|l| l.ident.clone());
+
+    let event_fields = layer_struct.event_fields();
+    let event_dep_names = event_fields.iter().map(|e| e.event.clone());
+    let event_fields = event_fields.iter().map(|e| EventInitializer((*e).clone()));
 
     let default_fields = layer_struct.default_fields();
     let data_fields = layer_struct.data_fields();
-
-    let context_identifier = custom_context_identifier
-        .unwrap_or_else(|| format_ident!("{}", layer_struct.name.to_string().to_uppercase()));
 
     let LayerStruct {
         visibility,
@@ -262,15 +318,13 @@ pub fn service(attr: TokenStream, input: TokenStream) -> TokenStream
 
     #[rustfmt::skip]
     quote!
-    {
-        static #context_identifier: StaticContext #generics = static_context!(#name, [#(#layer_field_deps),*]);
-        
+    {        
         #visibility struct #name
         {
             #fields
         }
 
-        impl LayerConstruct #generics for #name
+        impl ConstructLayer #generics for #name
         {
             fn construct(reg: &Registry #generics) -> Self
             {
@@ -278,7 +332,13 @@ pub fn service(attr: TokenStream, input: TokenStream) -> TokenStream
                     #(#layer_field_names: reg.get_unchecked(),)*
                     #(#default_fields,)*
                     #(#data_fields,)*
+                    #(#event_fields,)*
                 }
+            }
+
+            fn deps() -> Vec<LayerContext #generics>
+            {
+                vec![#(LayerContext::new::<#layer_field_deps>()),* #(EventEmitter::<#event_dep_names>::ctx()),*]
             }
         }
     }
@@ -300,11 +360,8 @@ impl ToTokens for BuildRegArgs
 {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream)
     {
-        let args = self
-            .0
-            .iter()
-            .map(|a| format_ident!("{}", a.to_string().to_uppercase()));
-        tokens.extend(quote! {#(.add_ctx(&#args))*});
+        let args = self.0.iter();
+        tokens.extend(quote! {#(.add_ctx::<#args>())*});
     }
 }
 

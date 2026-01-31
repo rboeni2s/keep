@@ -200,7 +200,7 @@ impl<T> DynBuffer<T>
         self.push_keep(Keep::new(val));
     }
 
-    fn push_keep(&self, mut val: Keep<T>)
+    pub fn push_keep(&self, mut val: Keep<T>)
     {
         loop
         {

@@ -1,4 +1,5 @@
 pub mod dispatch;
+pub mod event;
 pub mod layer_context;
 pub mod registry;
 pub mod resolver;
@@ -10,10 +11,11 @@ pub use proc_layer;
 pub mod prelude
 {
     pub use crate::dispatch::{LayerDispatch, NoDispatch, SimpleDispatch};
-    pub use crate::layer_context::{LayerConstruct, StaticContext};
+    pub use crate::event::{EventEmitter, EventSubscriber};
+    pub use crate::layer_context::{ConstructLayer, ConstructLayerEx, LayerContext};
     pub use crate::registry::{Layer, Registry};
     pub use crate::resolver::Resolver;
-    pub use crate::static_context;
+    pub use keep::Guard;
 
     #[cfg(feature = "macro")]
     pub use proc_layer::{build_reg, service};
@@ -92,9 +94,8 @@ mod tests
     #[test]
     fn resolver()
     {
-        static A_CONTEXT: StaticContext = static_context!(A, []);
         struct A(&'static str);
-        impl LayerConstruct for A
+        impl ConstructLayer for A
         {
             fn construct(_registry: &Registry) -> Self
             {
@@ -102,13 +103,17 @@ mod tests
             }
         }
 
-        static B_CONTEXT: StaticContext = static_context!(B, [A]);
         struct B(Layer<A>);
-        impl LayerConstruct for B
+        impl ConstructLayer for B
         {
             fn construct(registry: &Registry) -> Self
             {
                 Self(registry.get_unchecked())
+            }
+
+            fn deps() -> Vec<LayerContext>
+            {
+                vec![A::ctx()]
             }
         }
 
@@ -121,10 +126,10 @@ mod tests
         }
 
         let reg = Resolver::new()
-            .add_ctx(&B_CONTEXT)
-            .add_ctx(&A_CONTEXT)
+            .add_ctx::<B>()
+            // .add_ctx::<A>() // Don't need to add A as it is a dependency of B
             .build_reg()
-            .unwrap();
+            .expect("deps did not resolve");
 
         assert_eq!("Test", reg.get_unchecked::<B>().data());
     }
@@ -141,7 +146,6 @@ mod tests
     #[test]
     fn dispatching_resolver()
     {
-        static A_CTX: StaticContext<&str> = static_context!(A);
         struct A(&'static str);
 
         impl<T> SimpleDispatch<T> for A
@@ -154,7 +158,7 @@ mod tests
             }
         }
 
-        impl<T: Display> LayerConstruct<T> for A
+        impl<T: Display> ConstructLayer<T> for A
         {
             fn construct(_registry: &Registry<T, (), ()>) -> Self
             {
@@ -162,7 +166,7 @@ mod tests
             }
         }
 
-        let reg = Resolver::new().add_ctx(&A_CTX).build_reg().unwrap();
+        let reg = Resolver::new().add_ctx::<A>().build_reg().unwrap();
 
         print!("\n");
         reg.dispatch(&"Scissors out !!!");

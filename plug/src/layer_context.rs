@@ -2,100 +2,81 @@ use crate::{
     dispatch::{LayerDispatch, NoDispatch},
     registry::Registry,
 };
-use keep::{Guard, Heap, Keep};
+use keep::Guard;
 use std::any::TypeId;
 
 
-pub type StaticContext<E = NoDispatch, Err = (), Res = ()> =
-    std::sync::LazyLock<LayerContext<E, Err, Res>>;
+type ConstructorFn<E, Err, Res> = Box<
+    dyn Fn(
+            &Registry<E, Err, Res>,
+        ) -> Box<dyn LayerDispatch<E, Error = Err, Response = Res> + 'static>
+        + 'static,
+>;
 
 
-#[macro_export]
-macro_rules! dep_vec
-{
-    ($($dep:ident),*) => {vec![$(::std::any::TypeId::of::<$dep>()),*]};
-}
-
-
-#[macro_export]
-macro_rules! static_context {
-    ($layer:ident) => {::std::sync::LazyLock::new(|| $crate::layer_context::LayerContext::new::<$layer>($crate::dep_vec![]))};
-    ($layer:ident, [$($dep:ident),*] ) => {::std::sync::LazyLock::new(|| $crate::layer_context::LayerContext::new::<$layer>($crate::dep_vec![$($dep),*]))};
-}
-
-
-pub trait LayerConstruct<E = NoDispatch, Err = (), Res = ()>
+pub trait ConstructLayer<E = NoDispatch, Err = (), Res = ()>
 where
-    Self: Sized,
+    Self: LayerDispatch<E, Error = Err, Response = Res> + Sized + 'static,
 {
-    fn construct(registry: &Registry<E, Err, Res>) -> Self;
-}
+    fn construct(reg: &Registry<E, Err, Res>) -> Self;
 
-
-pub trait LayerConstructor<E, Err, Res>
-{
-    fn constructor()
-    -> impl Fn(&Registry<E, Err, Res>) -> Box<dyn LayerDispatch<E, Error = Err, Response = Res>>
-    + 'static;
-}
-
-
-impl<E, Err, Res, T> LayerConstructor<E, Err, Res> for T
-where
-    E: 'static,
-    Err: 'static,
-    Res: 'static,
-    T: LayerConstruct<E, Err, Res> + LayerDispatch<E, Error = Err, Response = Res> + 'static,
-{
-    fn constructor()
-    -> impl Fn(&Registry<E, Err, Res>) -> Box<dyn LayerDispatch<E, Error = Err, Response = Res>>
+    fn deps() -> Vec<LayerContext<E, Err, Res>>
     {
-        |registry| Box::new(Self::construct(registry))
+        vec![]
     }
 }
 
 
-#[allow(clippy::type_complexity)]
-pub struct LayerContext<E, Err, Res>
+/// # Safety
+/// Do not alter the blanket implementations of `ctx()` and `type_context()`.
+pub unsafe trait ConstructLayerEx<E, Err, Res>: ConstructLayer<E, Err, Res>
+{
+    fn ctx() -> LayerContext<E, Err, Res>
+    {
+        LayerContext::new::<Self>()
+    }
+
+    fn type_context() -> TypeId
+    {
+        TypeId::of::<Self>()
+    }
+}
+
+unsafe impl<T, E, Err, Res> ConstructLayerEx<E, Err, Res> for T where T: ConstructLayer<E, Err, Res> {}
+
+
+pub struct LayerContext<E = NoDispatch, Err = (), Res = ()>
 {
     type_id: TypeId,
-    deps: Vec<TypeId>,
-    constructor: Guard<
-        Box<
-            dyn Fn(
-                &Registry<E, Err, Res>,
-            ) -> Box<dyn LayerDispatch<E, Error = Err, Response = Res>>,
-        >,
-    >,
+    deps: Vec<Self>,
+    constructor: Guard<ConstructorFn<E, Err, Res>>,
 }
 
 
-unsafe impl<E, Err, Res> Send for LayerContext<E, Err, Res> {}
-unsafe impl<E, Err, Res> Sync for LayerContext<E, Err, Res> {}
+impl<E, Err, Res> Clone for LayerContext<E, Err, Res>
+{
+    fn clone(&self) -> Self
+    {
+        Self {
+            type_id: self.type_id,
+            deps: self.deps.clone(),
+            constructor: self.constructor.clone(),
+        }
+    }
+}
 
 
 impl<E, Err, Res> LayerContext<E, Err, Res>
 {
-    pub fn new<C>(deps: Vec<TypeId>) -> Self
-    where
-        C: LayerConstructor<E, Err, Res> + 'static,
+    pub fn new<T: ConstructLayer<E, Err, Res>>() -> Self
     {
-        #[allow(clippy::type_complexity)]
-        let constructor: Box<
-            dyn Fn(
-                    &Registry<E, Err, Res>,
-                )
-                    -> Box<dyn LayerDispatch<E, Error = Err, Response = Res> + 'static>
-                + 'static,
-        > = Box::new(C::constructor());
-
-        let constructor = unsafe { Heap::from_ptr(Box::into_raw(Box::new(constructor))) };
-        let constructor: Keep<Box<_>> = Keep::new(constructor);
+        let constructor: ConstructorFn<E, Err, Res> =
+            Box::new(|reg: &Registry<E, Err, Res>| Box::new(T::construct(reg)));
 
         Self {
-            type_id: TypeId::of::<C>(),
-            deps,
-            constructor: constructor.read(),
+            type_id: T::type_context(),
+            deps: T::deps(),
+            constructor: Guard::new(constructor),
         }
     }
 
@@ -105,9 +86,10 @@ impl<E, Err, Res> LayerContext<E, Err, Res>
             reg.insert_by((self.constructor)(reg), self.type_id);
         };
     }
-    pub(crate) fn deps(&self) -> Vec<TypeId>
+
+    pub(crate) fn deps(&self) -> &[Self]
     {
-        self.deps.clone()
+        &self.deps
     }
 
     pub(crate) fn id(&self) -> TypeId

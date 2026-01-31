@@ -1,0 +1,397 @@
+use keep::*;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+
+/// A fixed size concurrent buffer
+pub struct ConcurrentBuffer<T>
+{
+    last_index: AtomicUsize,
+    capacity: usize,
+    buffer: Box<[Keep<Option<Keep<T>>>]>,
+}
+
+
+impl<T> ConcurrentBuffer<T>
+{
+    /// Creates a new concurrent buffer with a capacity of `capacity`.
+    pub fn with_capacity(capacity: usize) -> Self
+    {
+        let mut buf = Box::new_uninit_slice(capacity);
+
+        for entry in &mut buf
+        {
+            entry.write(Keep::new(None));
+        }
+
+        let buf = unsafe { buf.assume_init() };
+
+        Self {
+            capacity,
+            last_index: AtomicUsize::new(0),
+            buffer: buf,
+        }
+    }
+
+    /// Inserts an element `e` at position `index` into the buffer.
+    ///
+    /// # Returns
+    /// * the old element as `Some(Keep<T>)` if a element was already present at `index`
+    /// * `None` if no element was present at `index` or if the index was out of bounds.
+    pub fn insert(&self, index: usize, e: impl Heaped<T>) -> Option<Keep<T>>
+    {
+        let keep = Keep::new(Some(Keep::new(e)));
+        self.buffer.get(index)?.swap_with(&keep);
+
+        if let Some(element) = &*keep.read()
+        {
+            return Some(element.clone());
+        }
+
+        None
+    }
+
+    /// Removes an element at position `index` from the buffer
+    pub fn remove(&self, index: usize) -> Option<Keep<T>>
+    {
+        if self.buffer.get(index)?.read().is_some()
+        {
+            let keep = Keep::new(None);
+            self.buffer[index].swap_with(&keep);
+
+            if let Some(value) = &*keep.read()
+            {
+                return Some(value.clone());
+            }
+        }
+
+        None
+    }
+
+    /// Returns the element at position `index`
+    ///
+    /// # Returns
+    /// * the element as `Some(Guard<T>)` if it exists at position `index`
+    /// * `None` if the element does not exist or `index` is out of bounds
+    pub fn get(&self, index: usize) -> Option<Guard<T>>
+    {
+        if let Some(element) = &*self.buffer.get(index)?.read()
+        {
+            return Some(element.read());
+        }
+
+        None
+    }
+
+    /// Tries to remove any element from the buffer
+    pub fn pop(&self) -> Option<Keep<T>>
+    {
+        let keep = Keep::new(None);
+
+        // Iterate over all slots
+        for (i, slot) in self.buffer.iter().enumerate()
+        {
+            let (e, marker) = slot.read_marked();
+
+            // if the slot is not free, try to take the slot
+            if e.is_some() && slot.swap_with_marked(marker, &keep)
+            {
+                return (*keep.read()).clone();
+            }
+        }
+
+        None
+    }
+
+    /// Tries to find a free slot and inserts `e` into it.
+    ///
+    /// # Returns
+    /// * `Ok(index)` if the element was inserted successfully where `index` indicates the position of `e`
+    /// * `Err(e)` if the buffer has no free slot left. E is the item passed as `e`.
+    pub fn put(&self, e: impl Heaped<T>) -> Result<usize, Keep<T>>
+    {
+        self.put_keep(Keep::new(e))
+    }
+
+    fn put_keep(&self, keep: Keep<T>) -> Result<usize, Keep<T>>
+    {
+        let wrapped_keep = Keep::new(Some(keep.clone()));
+        let last_index = self.last_index.fetch_add(1, Ordering::AcqRel);
+        let (e, marker) = self
+            .buffer
+            .get(last_index)
+            .ok_or(keep.clone())?
+            .read_marked();
+
+        // if the slot is free, try to insert into this slot
+        if e.is_none() && self.buffer[last_index].swap_with_marked(marker, &wrapped_keep)
+        // not using get(index) is okay here, since i already know this index exists
+        {
+            // Swap worked!
+            return Ok(last_index);
+        }
+
+        // The slot is not free, search linearly for a free slot...
+        for (i, slot) in self.buffer.iter().enumerate()
+        {
+            let (e, marker) = slot.read_marked();
+
+            // if the slot is free, try to insert into this slot
+            if e.is_none() && slot.swap_with_marked(marker, &wrapped_keep)
+            {
+                // The swap worked, set last index and return the index of the new element
+                self.last_index.store(i + 1, Ordering::Release);
+                return Ok(i);
+            }
+        }
+
+        // No free slot was found, error out
+        Err(keep)
+    }
+
+    /// Gives a hint to the buffer, that the next free index is `next_free`
+    pub fn set_index_hint(&self, next_free: usize)
+    {
+        self.last_index.store(next_free, Ordering::Release);
+    }
+}
+
+
+//TODO: Resizing does not work reliably in mt
+pub struct DynBuffer<T>
+{
+    min_size: usize,
+    buffer: Keep<ConcurrentBuffer<T>>,
+    resize_buffer: Keep<ConcurrentBuffer<T>>,
+    resize_flag: AtomicBool,
+    count: AtomicUsize,
+}
+
+
+impl<T> DynBuffer<T>
+{
+    const MIN_SIZE: usize = 4;
+
+    /// Creates a new dynamic buffer.
+    pub fn new() -> Self
+    {
+        Self::with_hint(Self::MIN_SIZE)
+    }
+
+
+    /// Create a `DynBuffer<T>` with a capacity of `hint^2`
+    ///
+    /// A hint of at least `Self::MIN_SIZE` will be enforced.
+    pub fn with_hint(hint: usize) -> Self
+    {
+        Self {
+            min_size: hint.max(Self::MIN_SIZE),
+            buffer: Keep::new(ConcurrentBuffer::with_capacity(
+                1 << hint.max(Self::MIN_SIZE),
+            )),
+            resize_buffer: Keep::new(ConcurrentBuffer::with_capacity(0)),
+            resize_flag: AtomicBool::new(false),
+            count: AtomicUsize::new(0),
+        }
+    }
+
+    /// Pushes a value `val` into the buffer
+    pub fn push(&self, val: impl Heaped<T>)
+    {
+        self.push_keep(Keep::new(val));
+    }
+
+    pub fn push_keep(&self, mut val: Keep<T>)
+    {
+        loop
+        {
+            // Help with resizing if a resize is ongoing...
+            self.maybe_resize();
+
+            if let Err(v) = self.buffer.read().put_keep(val)
+            {
+                let count = self.count.load(Ordering::Acquire);
+                self.consider_resize(count + 1);
+                val = v;
+                continue;
+            }
+
+            self.count.fetch_add(1, Ordering::AcqRel);
+            break;
+        }
+    }
+
+    /// Pops a value from the buffer
+    pub fn pop(&self) -> Option<Keep<T>>
+    {
+        loop
+        {
+            if self.count.load(Ordering::Acquire) == 0
+            {
+                return None;
+            }
+
+            // Help with ongoing resize
+            self.maybe_resize();
+
+            // Try to pop an item
+            let ret = self.buffer.read().pop();
+
+            // If something was popped of, adjust size and return
+            if ret.is_some()
+            {
+                let count = self.count.fetch_sub(1, Ordering::AcqRel);
+                self.consider_resize(count);
+                return ret;
+            }
+        }
+    }
+
+    fn consider_resize(&self, index: usize) -> bool
+    {
+        let mut buf = None;
+        let capacity = self.buffer.read().capacity;
+        let new_buffer = self.resize_buffer.read();
+
+        // instant return if resize is ongoing
+        if self.resize_flag.load(Ordering::Acquire)
+        {
+            return true;
+        }
+
+        // Do a resize up if the buffer is almost full
+        if capacity <= index + 1
+        {
+            buf = Some(ConcurrentBuffer::with_capacity(capacity << 1));
+        }
+        // Do a resize down if the buffer is less than half full - 2
+        else if (capacity >> 1) - 2 > index && capacity > (1 << self.min_size)
+        {
+            buf = Some(ConcurrentBuffer::with_capacity(capacity >> 1));
+        }
+
+        if let Some(buf) = buf
+            && self
+                .resize_flag
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+        {
+            // Update resize buffer
+            self.resize_buffer.write(buf);
+            // Swap the buffers
+            self.buffer.swap_with(&self.resize_buffer);
+
+            return true;
+        }
+
+        false
+    }
+
+    fn maybe_resize(&self)
+    {
+        let mut resizing = self.resize_flag.load(Ordering::Acquire);
+        let old_buffer = self.resize_buffer.read();
+        let (buffer, marker) = self.buffer.read_marked();
+
+        while resizing
+        {
+            match old_buffer.pop()
+            {
+                Some(val) => _ = buffer.put_keep(val), // this will not fail
+
+                None =>
+                {
+                    if self
+                        .resize_flag
+                        .compare_exchange_weak(true, false, Ordering::AcqRel, Ordering::Relaxed)
+                        .is_ok()
+                    {
+                        // Something is not right here...
+                        // self.resize_buffer.write(ConcurrentBuffer::with_capacity(0));
+                        break;
+                    }
+                }
+            }
+
+            resizing = self.resize_flag.load(Ordering::Acquire);
+        }
+    }
+
+    /// Generates a snapshot of the buffer
+    pub fn snapshot(&self) -> Snapshot<T>
+    {
+        self.maybe_resize();
+        Snapshot::from(&*self.buffer.read())
+    }
+
+    /// Clears the buffer and returns it's contents
+    pub fn flush(&self, max: Option<usize>) -> Vec<Keep<T>>
+    {
+        let max = max.unwrap_or(usize::MAX);
+        let mut count = 0;
+        let mut buffer = Vec::with_capacity(self.buffer.read().capacity);
+
+        while let Some(item) = self.pop()
+        {
+            buffer.push(item);
+            count += 1;
+
+            if count >= max
+            {
+                break;
+            }
+        }
+
+        buffer
+    }
+}
+
+
+impl<T> Default for DynBuffer<T>
+{
+    fn default() -> Self
+    {
+        Self::new()
+    }
+}
+
+
+/// Represents a snapshot of a concurrent buffer
+pub struct Snapshot<T>
+{
+    st_buffer: Vec<Guard<T>>,
+}
+
+
+impl<T> AsMut<Vec<Guard<T>>> for Snapshot<T>
+{
+    fn as_mut(&mut self) -> &mut Vec<Guard<T>>
+    {
+        &mut self.st_buffer
+    }
+}
+
+
+impl<T> AsRef<Vec<Guard<T>>> for Snapshot<T>
+{
+    fn as_ref(&self) -> &Vec<Guard<T>>
+    {
+        &self.st_buffer
+    }
+}
+
+
+impl<T> From<&ConcurrentBuffer<T>> for Snapshot<T>
+{
+    fn from(value: &ConcurrentBuffer<T>) -> Self
+    {
+        let mut st_buffer = Vec::with_capacity(value.capacity);
+
+        value
+            .buffer
+            .iter()
+            .filter_map(|e| e.read().as_ref().as_ref().map(|g| g.read()))
+            .collect_into(&mut st_buffer);
+
+        Self { st_buffer }
+    }
+}

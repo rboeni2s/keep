@@ -1,12 +1,15 @@
 #![allow(unused)]
+#![feature(iter_collect_into)]
 
 
+mod dynbuf;
 mod entry;
 mod map;
 mod resizer;
 mod table;
 
 
+pub use dynbuf::{ConcurrentBuffer, DynBuffer};
 pub use map::PlugMap;
 
 

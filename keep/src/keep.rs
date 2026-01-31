@@ -10,6 +10,15 @@ use crate::{
 pub struct KeepMarker<T>(*mut TrackedAtomic<T>);
 
 
+impl<T> PartialEq for KeepMarker<T>
+{
+    fn eq(&self, other: &Self) -> bool
+    {
+        self.0 == other.0
+    }
+}
+
+
 pub struct Keep<T>
 {
     tracked_atomic: AtomicPtr<AtomicPtr<TrackedAtomic<T>>>,

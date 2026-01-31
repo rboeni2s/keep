@@ -1,4 +1,6 @@
 use crate::{
+    Heaped,
+    Keep,
     alist::Node,
     heaped::Heap,
     tracked_atomic::{Mutation, TrackedAtomic},
@@ -11,6 +13,15 @@ pub struct Guard<T>
     pub(crate) ptr: Heap<Mutation<T>>,
     pub(crate) node: Heap<Node<Mutation<T>>>,
     pub(crate) tracked_atomic: Heap<TrackedAtomic<T>>,
+}
+
+
+impl<T> Guard<T>
+{
+    pub fn new(val: impl Heaped<T>) -> Self
+    {
+        Keep::new(val).read()
+    }
 }
 
 

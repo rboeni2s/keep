@@ -125,13 +125,11 @@ fn worker_a_task(reg: Registry)
     {
         // Check if a user with an id of 2 exists and is named "Test"
         if let Some(username) = user_service.get_username(2)
-        {
-            if username == "Test"
+            && username == "Test"
             {
                 println!("A: The user 'Test' was registered with id 2");
                 break;
             }
-        }
 
         // Sleep to avoid wasting cpu...
         thread::sleep(Duration::from_millis(200));

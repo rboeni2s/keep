@@ -1,11 +1,14 @@
-use crate::prelude::{ConstructLayer, LayerDispatch, Registry};
+use std::marker::PhantomData;
+
+use crate::prelude::{ConstructLayer, LayerDispatch, NoDispatch, Registry, SimpleDispatch};
 use keep::*;
 use plugmap::DynBuffer;
 
 
-pub struct EventEmitter<E>
+pub struct EventEmitter<E, Err = (), Res = ()>
 {
     subscribers: DynBuffer<EventSubscriber<E>>,
+    _phantom: PhantomData<(Err, Res)>,
 }
 
 
@@ -52,15 +55,18 @@ impl<E> EventSubscriber<E>
 }
 
 
-impl<E, D, Err, Res> ConstructLayer<D, Err, Res> for EventEmitter<E>
+impl<E, D, Err, Res> ConstructLayer<D, Err, Res> for EventEmitter<E, Err, Res>
 where
     E: 'static,
-    EventEmitter<E>: LayerDispatch<D, Error = Err, Response = Res>,
+    Err: 'static,
+    Res: 'static,
+    EventEmitter<E, Err, Res>: LayerDispatch<D, Error = Err, Response = Res>,
 {
     fn construct(_registry: &Registry<D, Err, Res>) -> Self
     {
         Self {
             subscribers: DynBuffer::new(),
+            _phantom: PhantomData,
         }
     }
 }

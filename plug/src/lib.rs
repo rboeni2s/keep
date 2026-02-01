@@ -4,6 +4,9 @@ pub mod layer_context;
 pub mod registry;
 pub mod resolver;
 
+#[cfg(feature = "logger")]
+pub mod logger;
+
 
 #[cfg(feature = "macro")]
 pub use proc_layer;

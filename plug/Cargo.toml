@@ -5,11 +5,14 @@ edition = "2024"
 
 
 [dependencies]
+fern = { version = "0.7.1", optional = true }
 keep = { version = "0.1.0", path = "../keep" }
+log = { version = "0.4.29", optional = true }
 plugmap = { version = "0.1.0", path = "../plugmap" }
 proc_layer = {path = "proc_layer", optional=true}
 
 
 [features]
-default = ["macro"]
+default = ["macro", "logger"]
 macro = ["dep:proc_layer"]
+logger = ["dep:log", "dep:fern"]

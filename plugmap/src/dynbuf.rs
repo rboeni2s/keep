@@ -107,13 +107,11 @@ impl<T> ConcurrentBuffer<T>
 
             // if the slot is not free, try to take the slot
             if e.is_some()
-            {
-                if let Ok(guard) = slot.cas(&e, None)
+                && let Ok(guard) = slot.cas(&e, None)
                 {
                     self.set_index_hint(i); // Set the index hint to the slot that was just cleared
-                    return guard.as_ref().as_ref().map(|g| g.clone());
+                    return guard.as_ref().clone();
                 }
-            }
         }
 
         None
@@ -150,14 +148,12 @@ impl<T> ConcurrentBuffer<T>
         // If the slot at last index is free, try to take it
         let maybe_free = self.buffer[last_index].read();
         if maybe_free.is_none()
-        {
-            if self.buffer[last_index]
+            && self.buffer[last_index]
                 .cas(&maybe_free, wrapped.clone())
                 .is_ok()
             {
                 return Ok(last_index);
             }
-        }
 
         // Fallback if last_index was not free:
         // The slot is not free, search linearly for a free slot...

@@ -70,11 +70,7 @@ impl Application
 
             while let Some(window_event) = self.window_events.pop()
             {
-                match &*window_event
-                {
-                    WindowEvent::Close => self.exit(),
-                    _ => (),
-                }
+                if let WindowEvent::Close = &*window_event { self.exit() }
             }
 
             // Run all main loop tasks...

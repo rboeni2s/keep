@@ -94,7 +94,7 @@ impl<T> AsRef<T> for Guard<T>
 {
     fn as_ref(&self) -> &T
     {
-        &self
+        self
     }
 }
 

@@ -111,7 +111,7 @@ where
 
     pub fn update(&self, node: &Keep<EntryNode<Key, Val>>) -> Option<Guard<Val>>
     {
-        if &*self.key == &*node.read().key
+        if *self.key == *node.read().key
         {
             let old = self.val.swallow(&node.read().val);
             return Some(old);

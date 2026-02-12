@@ -5,7 +5,7 @@ use std::thread;
 
 use crate::helper::Drops;
 use helper::DropChecker;
-use keep2::{guard::Guard, heap::Heap};
+use keep::{guard::Guard, heap::Heap};
 
 
 #[test]

@@ -2,7 +2,7 @@ mod helper;
 
 
 use helper::DropChecker;
-use keep2::prelude::*;
+use keep::prelude::*;
 
 
 #[test]

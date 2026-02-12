@@ -84,6 +84,22 @@ impl<T> ConcurrentBuffer<T>
     /// Tries to remove any element from the buffer
     pub fn pop(&self) -> Option<Keep<T>>
     {
+        // Get the last index
+        let last_index = self
+            .last_index
+            .fetch_update(Ordering::Release, Ordering::Acquire, |li| {
+                Some(li.saturating_sub(1))
+            })
+            .unwrap()
+            .saturating_sub(1);
+
+        // Try to get the last index
+        if let Some(element) = self.remove(last_index)
+        {
+            return Some(element);
+        }
+
+        // Fallback if the last_index missed:
         // Iterate over all slots
         for (i, slot) in self.buffer.iter().enumerate()
         {
@@ -94,7 +110,8 @@ impl<T> ConcurrentBuffer<T>
             {
                 if let Ok(guard) = slot.cas(&e, None)
                 {
-                    return guard.as_ref().map(|g| g.clone());
+                    self.set_index_hint(i); // Set the index hint to the slot that was just cleared
+                    return guard.as_ref().as_ref().map(|g| g.clone());
                 }
             }
         }
@@ -114,35 +131,45 @@ impl<T> ConcurrentBuffer<T>
 
     fn put_keep(&self, keep: Keep<T>) -> Result<usize, Keep<T>>
     {
-        let wrapped_keep = Guard::new(Some(keep.clone()));
+        if self.capacity == 0
+        {
+            println!("PUT ON 0 CAP");
+            return Err(keep);
+        }
 
-        //TODO: Here is an error somewhere... maybe rewrite all of this...
+        let wrapped = Guard::new(Some(keep.clone()));
 
-        // let last_index = self.last_index.fetch_add(1, Ordering::AcqRel);
-        // let (e, marker) = self
-        //     .buffer
-        //     .get(last_index)
-        //     .ok_or(keep.clone())?
-        //     .read_marked();
+        // Get the last index
+        let last_index = self
+            .last_index
+            .fetch_update(Ordering::Release, Ordering::Acquire, |li| {
+                Some((li + 1).min(self.capacity.saturating_sub(1)))
+            })
+            .unwrap();
 
-        // // if the slot is free, try to insert into this slot
-        // if e.is_none() && self.buffer[last_index].swap_with_marked(marker, &wrapped_keep)
-        // // not using get(index) is okay here, since i already know this index exists
-        // {
-        //     // Swap worked!
-        //     return Ok(last_index);
-        // }
+        // If the slot at last index is free, try to take it
+        let maybe_free = self.buffer[last_index].read();
+        if maybe_free.is_none()
+        {
+            if self.buffer[last_index]
+                .cas(&maybe_free, wrapped.clone())
+                .is_ok()
+            {
+                return Ok(last_index);
+            }
+        }
 
+        // Fallback if last_index was not free:
         // The slot is not free, search linearly for a free slot...
         for (i, slot) in self.buffer.iter().enumerate()
         {
             let e = slot.read();
 
             // if the slot is free, try to insert into this slot
-            if e.is_none() && slot.cas(&e, wrapped_keep.clone()).is_ok()
+            if e.is_none() && slot.cas(&e, wrapped.clone()).is_ok()
             {
                 // The swap worked, set last index and return the index of the new element
-                self.last_index.store(i + 1, Ordering::Release);
+                self.set_index_hint(i + 1);
                 return Ok(i);
             }
         }
@@ -165,7 +192,8 @@ pub struct DynBuffer<T>
     min_size: usize,
     buffer: Keep<ConcurrentBuffer<T>>,
     resize_buffer: Keep<ConcurrentBuffer<T>>,
-    resize_flag: AtomicBool,
+    resize_started: AtomicBool,
+    resize_finished: AtomicBool,
     count: AtomicUsize,
 }
 
@@ -192,7 +220,8 @@ impl<T> DynBuffer<T>
                 1 << hint.max(Self::MIN_SIZE),
             )),
             resize_buffer: Keep::new(ConcurrentBuffer::with_capacity(0)),
-            resize_flag: AtomicBool::new(false),
+            resize_started: AtomicBool::new(false),
+            resize_finished: AtomicBool::new(true),
             count: AtomicUsize::new(0),
         }
     }
@@ -210,16 +239,23 @@ impl<T> DynBuffer<T>
             // Help with resizing if a resize is ongoing...
             self.maybe_resize();
 
-            if let Err(v) = self.buffer.read().put_keep(val)
+            let count = match self.buffer.read().put_keep(val)
             {
-                let count = self.count.load(Ordering::Acquire);
-                self.consider_resize(count + 1);
-                val = v;
-                continue;
-            }
+                Err(v) =>
+                {
+                    val = v;
+                    self.count.load(Ordering::Acquire)
+                }
 
-            self.count.fetch_add(1, Ordering::AcqRel);
-            break;
+                Ok(_) =>
+                {
+                    let count = self.count.fetch_add(1, Ordering::AcqRel) + 1;
+                    self.consider_resize(count);
+                    return;
+                }
+            };
+
+            self.consider_resize(count);
         }
     }
 
@@ -256,13 +292,13 @@ impl<T> DynBuffer<T>
         let new_buffer = self.resize_buffer.read();
 
         // instant return if resize is ongoing
-        if self.resize_flag.load(Ordering::Acquire)
+        if self.resize_started.load(Ordering::Acquire)
         {
             return true;
         }
 
         // Do a resize up if the buffer is almost full
-        if capacity <= index + 1
+        if capacity <= index + 2
         {
             buf = Some(ConcurrentBuffer::with_capacity(capacity << 1));
         }
@@ -274,28 +310,24 @@ impl<T> DynBuffer<T>
 
         if let Some(buf) = buf
             && self
-                .resize_flag
+                .resize_started
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
         {
-            // Swap the buffers
+            // Setup resize buffer
             self.resize_buffer.write(buf);
-            let old_buffer = self.buffer.swallow(&self.resize_buffer);
-            self.resize_buffer.write(old_buffer);
-
             return true;
         }
 
         false
     }
 
-    fn maybe_resize(&self)
+    fn resize(&self)
     {
-        let mut resizing = self.resize_flag.load(Ordering::Acquire);
-        let old_buffer = self.resize_buffer.read();
-        let buffer = self.buffer.read();
+        let buffer = self.resize_buffer.read();
+        let old_buffer = self.buffer.read();
 
-        while resizing
+        loop
         {
             match old_buffer.pop()
             {
@@ -304,18 +336,47 @@ impl<T> DynBuffer<T>
                 None =>
                 {
                     if self
-                        .resize_flag
+                        .resize_started
                         .compare_exchange_weak(true, false, Ordering::AcqRel, Ordering::Relaxed)
                         .is_ok()
                     {
-                        // Something is not right here...
-                        // self.resize_buffer.write(ConcurrentBuffer::with_capacity(0));
+                        self.buffer.swallow(&self.resize_buffer);
+                        self.resize_buffer
+                            .swallow(&Keep::new(ConcurrentBuffer::with_capacity(0)));
                         break;
                     }
                 }
             }
+        }
+    }
 
-            resizing = self.resize_flag.load(Ordering::Acquire);
+    fn maybe_resize(&self)
+    {
+        // Make all but one thread wait
+        // The thread the swaps resize_finished to false will handle the resize
+        // all other threads will wait.
+        if self.resize_started.load(Ordering::Acquire)
+        {
+            if self
+                .resize_finished
+                .compare_exchange(true, false, Ordering::Release, Ordering::Relaxed)
+                .is_ok()
+            {
+                self.resize();
+                self.resize_finished.store(true, Ordering::Release);
+                self.resize_started.store(false, Ordering::Release);
+                return;
+            }
+        }
+
+        // Wait until the resize is finished
+        let mut resize_finished = self.resize_finished.load(Ordering::Acquire);
+        if resize_finished == false
+        {
+            while !self.resize_finished.load(Ordering::Acquire)
+            {
+                std::hint::spin_loop();
+            }
         }
     }
 

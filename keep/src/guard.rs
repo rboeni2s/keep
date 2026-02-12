@@ -90,6 +90,15 @@ impl<T> std::ops::Deref for Guard<T>
 }
 
 
+impl<T> AsRef<T> for Guard<T>
+{
+    fn as_ref(&self) -> &T
+    {
+        &self
+    }
+}
+
+
 impl<T> Drop for Guard<T>
 {
     fn drop(&mut self)
@@ -103,6 +112,15 @@ impl<T> Drop for Guard<T>
                 hrc.free_unchecked();
             }
         }
+    }
+}
+
+
+impl<T: std::fmt::Debug> std::fmt::Debug for Guard<T>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
+    {
+        self.as_ref().fmt(f)
     }
 }
 

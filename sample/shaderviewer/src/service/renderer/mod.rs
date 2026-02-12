@@ -44,9 +44,7 @@ impl Renderer
 {
     pub fn init_from_window(&self, window: Guard<PlatformWindow>) -> anyhow::Result<()>
     {
-        let size = window.inner_size();
         let render_state = pollster::block_on(RenderState::new(window))?;
-        render_state.resize(size.width, size.height)?;
         self.state.write(Some(render_state));
         Ok(())
     }

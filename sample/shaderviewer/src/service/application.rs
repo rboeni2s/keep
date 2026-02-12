@@ -70,7 +70,10 @@ impl Application
 
             while let Some(window_event) = self.window_events.pop()
             {
-                if let WindowEvent::Close = &*window_event { self.exit() }
+                if let WindowEvent::Close = &*window_event
+                {
+                    self.exit()
+                }
             }
 
             // Run all main loop tasks...
@@ -79,8 +82,12 @@ impl Application
                 task(reg);
             }
 
-            let sleep_time = Duration::from_millis(16) - frame_start.elapsed();
-            thread::sleep(sleep_time);
+            // Sleep to meet 60fps target
+            let sleep_time = Duration::from_millis(16).saturating_sub(frame_start.elapsed());
+            if !sleep_time.is_zero()
+            {
+                thread::sleep(sleep_time)
+            }
         }
 
         Ok(())

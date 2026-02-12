@@ -165,14 +165,19 @@ impl RenderState
 
         info!("Initialized renderer for adapter:\n{info:#?}");
 
-        Ok(Self {
+        let me = Self {
             surface,
             device,
             queue,
             config: Mutex::new(surface_config),
             surface_out_of_date: AtomicBool::new(true),
             window,
-        })
+        };
+
+        // Finally perform a initial window resize
+        me.resize(surface_size.width, surface_size.height)?;
+
+        Ok(me)
     }
 
     pub fn resize(&self, width: u32, height: u32) -> anyhow::Result<()>

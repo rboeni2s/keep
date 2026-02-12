@@ -1,4 +1,4 @@
-use keep::*;
+use keep::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 
@@ -37,12 +37,12 @@ impl<T> ConcurrentBuffer<T>
     /// # Returns
     /// * the old element as `Some(Keep<T>)` if a element was already present at `index`
     /// * `None` if no element was present at `index` or if the index was out of bounds.
-    pub fn insert(&self, index: usize, e: impl Heaped<T>) -> Option<Keep<T>>
+    pub fn insert(&self, index: usize, e: impl Into<Guard<T>>) -> Option<Keep<T>>
     {
-        let keep = Keep::new(Some(Keep::new(e)));
-        self.buffer.get(index)?.swap_with(&keep);
+        let e = Some(Keep::new(e));
+        let old = self.buffer.get(index)?.swap(e);
 
-        if let Some(element) = &*keep.read()
+        if let Some(element) = &*old
         {
             return Some(element.clone());
         }
@@ -55,10 +55,9 @@ impl<T> ConcurrentBuffer<T>
     {
         if self.buffer.get(index)?.read().is_some()
         {
-            let keep = Keep::new(None);
-            self.buffer[index].swap_with(&keep);
+            let old = self.buffer[index].swap(None);
 
-            if let Some(value) = &*keep.read()
+            if let Some(value) = &*old
             {
                 return Some(value.clone());
             }
@@ -85,17 +84,18 @@ impl<T> ConcurrentBuffer<T>
     /// Tries to remove any element from the buffer
     pub fn pop(&self) -> Option<Keep<T>>
     {
-        let keep = Keep::new(None);
-
         // Iterate over all slots
         for (i, slot) in self.buffer.iter().enumerate()
         {
-            let (e, marker) = slot.read_marked();
+            let e = slot.read();
 
             // if the slot is not free, try to take the slot
-            if e.is_some() && slot.swap_with_marked(marker, &keep)
+            if e.is_some()
             {
-                return (*keep.read()).clone();
+                if let Ok(guard) = slot.cas(&e, None)
+                {
+                    return guard.as_ref().map(|g| g.clone());
+                }
             }
         }
 
@@ -107,36 +107,39 @@ impl<T> ConcurrentBuffer<T>
     /// # Returns
     /// * `Ok(index)` if the element was inserted successfully where `index` indicates the position of `e`
     /// * `Err(e)` if the buffer has no free slot left. E is the item passed as `e`.
-    pub fn put(&self, e: impl Heaped<T>) -> Result<usize, Keep<T>>
+    pub fn put(&self, e: impl Into<Guard<T>>) -> Result<usize, Keep<T>>
     {
         self.put_keep(Keep::new(e))
     }
 
     fn put_keep(&self, keep: Keep<T>) -> Result<usize, Keep<T>>
     {
-        let wrapped_keep = Keep::new(Some(keep.clone()));
-        let last_index = self.last_index.fetch_add(1, Ordering::AcqRel);
-        let (e, marker) = self
-            .buffer
-            .get(last_index)
-            .ok_or(keep.clone())?
-            .read_marked();
+        let wrapped_keep = Guard::new(Some(keep.clone()));
 
-        // if the slot is free, try to insert into this slot
-        if e.is_none() && self.buffer[last_index].swap_with_marked(marker, &wrapped_keep)
-        // not using get(index) is okay here, since i already know this index exists
-        {
-            // Swap worked!
-            return Ok(last_index);
-        }
+        //TODO: Here is an error somewhere... maybe rewrite all of this...
+
+        // let last_index = self.last_index.fetch_add(1, Ordering::AcqRel);
+        // let (e, marker) = self
+        //     .buffer
+        //     .get(last_index)
+        //     .ok_or(keep.clone())?
+        //     .read_marked();
+
+        // // if the slot is free, try to insert into this slot
+        // if e.is_none() && self.buffer[last_index].swap_with_marked(marker, &wrapped_keep)
+        // // not using get(index) is okay here, since i already know this index exists
+        // {
+        //     // Swap worked!
+        //     return Ok(last_index);
+        // }
 
         // The slot is not free, search linearly for a free slot...
         for (i, slot) in self.buffer.iter().enumerate()
         {
-            let (e, marker) = slot.read_marked();
+            let e = slot.read();
 
             // if the slot is free, try to insert into this slot
-            if e.is_none() && slot.swap_with_marked(marker, &wrapped_keep)
+            if e.is_none() && slot.cas(&e, wrapped_keep.clone()).is_ok()
             {
                 // The swap worked, set last index and return the index of the new element
                 self.last_index.store(i + 1, Ordering::Release);
@@ -195,7 +198,7 @@ impl<T> DynBuffer<T>
     }
 
     /// Pushes a value `val` into the buffer
-    pub fn push(&self, val: impl Heaped<T>)
+    pub fn push(&self, val: impl Into<Guard<T>>)
     {
         self.push_keep(Keep::new(val));
     }
@@ -264,7 +267,7 @@ impl<T> DynBuffer<T>
             buf = Some(ConcurrentBuffer::with_capacity(capacity << 1));
         }
         // Do a resize down if the buffer is less than half full - 2
-        else if (capacity >> 1) - 2 > index && capacity > (1 << self.min_size)
+        else if (capacity >> 1) - 1 > index && capacity > (1 << self.min_size)
         {
             buf = Some(ConcurrentBuffer::with_capacity(capacity >> 1));
         }
@@ -275,10 +278,10 @@ impl<T> DynBuffer<T>
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
         {
-            // Update resize buffer
-            self.resize_buffer.write(buf);
             // Swap the buffers
-            self.buffer.swap_with(&self.resize_buffer);
+            self.resize_buffer.write(buf);
+            let old_buffer = self.buffer.swallow(&self.resize_buffer);
+            self.resize_buffer.write(old_buffer);
 
             return true;
         }
@@ -290,7 +293,7 @@ impl<T> DynBuffer<T>
     {
         let mut resizing = self.resize_flag.load(Ordering::Acquire);
         let old_buffer = self.resize_buffer.read();
-        let (buffer, marker) = self.buffer.read_marked();
+        let buffer = self.buffer.read();
 
         while resizing
         {

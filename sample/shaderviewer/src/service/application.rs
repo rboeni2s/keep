@@ -4,10 +4,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{REGISTRY, ServiceEvent, window::WindowEvent};
+use crate::service::{REGISTRY, ServiceEvent};
+use crate::window::WindowEvent;
 use anyhow::Context;
+use keep::Keep;
 use plug::prelude::*;
 use plugmap::DynBuffer;
+use winit::event_loop::EventLoopProxy;
+
+
+type TaskFn = Box<dyn Fn(&Registry<ServiceEvent>) + 'static>;
 
 
 #[non_exhaustive]
@@ -16,6 +22,7 @@ pub enum ApplicationEvent
 {
     Start,
     Close,
+    TickWindow,
 }
 
 
@@ -25,6 +32,9 @@ pub struct Application<ServiceEvent>
     #[event(WindowEvent)]
     window_events: EventSubscriber<WindowEvent>,
 
+    #[value = Keep::new(None)]
+    window_loop_proxy: Keep<Option<EventLoopProxy<ApplicationEvent>>>,
+
     #[layer]
     app_event_emitter: EventEmitter<ApplicationEvent>,
 
@@ -32,7 +42,7 @@ pub struct Application<ServiceEvent>
     should_quit: AtomicBool,
 
     #[default]
-    tasks: DynBuffer<Box<dyn Fn(&Registry<ServiceEvent>)>>,
+    tasks: DynBuffer<TaskFn>,
 }
 
 
@@ -53,12 +63,17 @@ impl Application
                 break;
             }
 
+            if let Some(w) = &*self.window_loop_proxy.read()
+            {
+                w.send_event(ApplicationEvent::TickWindow)?;
+            }
+
             while let Some(window_event) = self.window_events.pop()
             {
                 match &*window_event
                 {
                     WindowEvent::Close => self.exit(),
-                    WindowEvent::Created => (),
+                    _ => (),
                 }
             }
 
@@ -75,6 +90,11 @@ impl Application
         Ok(())
     }
 
+    pub fn set_window_proxy(&self, proxy: EventLoopProxy<ApplicationEvent>)
+    {
+        self.window_loop_proxy.write(Some(proxy));
+    }
+
     /// Exits the application, respecting only the first call to exit.
     pub fn exit(&self)
     {
@@ -89,7 +109,7 @@ impl Application
     /// Adds a task to be executed repeatedly in the main-loop
     pub fn add_task(&self, task: impl Fn(&Registry<ServiceEvent>) + 'static)
     {
-        let boxed: Box<dyn Fn(&Registry<ServiceEvent>)> = Box::new(task);
+        let boxed: TaskFn = Box::new(task);
         self.tasks.push(boxed);
     }
 }

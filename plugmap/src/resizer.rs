@@ -1,5 +1,5 @@
 use crate::{entry::Entry, table::Table};
-use keep::*;
+use keep::prelude::*;
 use std::{
     hash::Hash,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -59,7 +59,7 @@ where
     {
         if !self.finished.swap(true, Ordering::SeqCst)
         {
-            old_table.swap_with(&self.new_table);
+            old_table.swallow(&self.new_table);
         }
     }
 

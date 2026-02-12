@@ -1,6 +1,6 @@
 use crate::{
-    ServiceEvent,
-    application::{Application, ApplicationEvent},
+    service::ServiceEvent,
+    service::application::{Application, ApplicationEvent},
 };
 use plug::prelude::*;
 
@@ -20,7 +20,7 @@ impl Watcher
 {
     fn tick(_reg: &Registry<ServiceEvent>)
     {
-        info!("i am being ticked...");
+        // info!("i am being ticked...");
     }
 }
 
@@ -29,6 +29,7 @@ impl SimpleDispatch<ServiceEvent> for Watcher
 {
     fn simple_dispatch(&self, event: &ServiceEvent)
     {
+        #[allow(irrefutable_let_patterns)]
         if let ServiceEvent::Init = event
         {
             self.app.add_task(Self::tick);

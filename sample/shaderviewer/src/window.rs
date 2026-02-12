@@ -1,11 +1,13 @@
+use std::time::{Duration, Instant};
+
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent as PlatformWindowEvent,
-    event_loop::ActiveEventLoop,
+    event_loop::{ActiveEventLoop, ControlFlow::WaitUntil},
     window::{Window as PlatformWindow, WindowAttributes, WindowId},
 };
 
-use crate::application::ApplicationEvent;
+use crate::service::{REGISTRY, application::ApplicationEvent, renderer::Renderer};
 use plug::prelude::*;
 
 
@@ -13,14 +15,16 @@ use plug::prelude::*;
 pub enum WindowEvent
 {
     Close,
-    Created,
+    Resize(u32, u32),
+    Redraw,
 }
 
 
 pub struct WindowHandler
 {
-    window: Option<PlatformWindow>,
+    window: Option<Guard<PlatformWindow>>,
     window_event_emitter: Layer<EventEmitter<WindowEvent>>,
+    latest_resize_event: Option<(u32, u32)>,
 }
 
 
@@ -30,6 +34,7 @@ impl WindowHandler
     {
         Self {
             window: None,
+            latest_resize_event: None,
             window_event_emitter,
         }
     }
@@ -44,8 +49,33 @@ impl ApplicationHandler<ApplicationEvent> for WindowHandler
         {
             Ok(window) =>
             {
-                self.window = Some(window);
-                self.window_event_emitter.emit(WindowEvent::Created);
+                let window = Guard::new(window);
+                self.window = Some(window.clone());
+
+                if let Some(reg) = REGISTRY.get()
+                {
+                    match reg.get::<Renderer>()
+                    {
+                        Some(renderer) =>
+                        {
+                            match renderer.init_from_window(window)
+                            {
+                                Ok(_) => info!("Renderer initialized"),
+                                Err(e) =>
+                                {
+                                    error!("Failed to initialize renderer: {e}");
+                                    self.window_event_emitter.emit(WindowEvent::Close);
+                                }
+                            }
+                        }
+
+                        None =>
+                        {
+                            error!("Failed to initialize renderer: Renderer does not exist");
+                            self.window_event_emitter.emit(WindowEvent::Close);
+                        }
+                    }
+                }
             }
 
             Err(e) =>
@@ -73,17 +103,31 @@ impl ApplicationHandler<ApplicationEvent> for WindowHandler
 
             PlatformWindowEvent::RedrawRequested =>
             {
-                //TODO
+                self.window_event_emitter.emit(WindowEvent::Redraw);
             }
+
+            PlatformWindowEvent::Resized(size) =>
+            {
+                self.latest_resize_event = Some((size.width, size.height))
+            }
+
             _ => (),
         }
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: ApplicationEvent)
     {
-        if let ApplicationEvent::Close = event
+        match event
         {
-            event_loop.exit()
+            ApplicationEvent::Close => event_loop.exit(),
+            ApplicationEvent::TickWindow =>
+            {
+                if let Some((w, h)) = self.latest_resize_event.take()
+                {
+                    self.window_event_emitter.emit(WindowEvent::Resize(w, h));
+                }
+            }
+            _ => (),
         }
     }
 }

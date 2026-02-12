@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use crate::prelude::{ConstructLayer, LayerDispatch, NoDispatch, Registry, SimpleDispatch};
+use crate::prelude::{ConstructLayer, LayerDispatch, Registry};
 use keep::*;
 use plugmap::DynBuffer;
 

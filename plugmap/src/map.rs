@@ -2,7 +2,7 @@ use crate::{
     entry::EntryNode,
     table::{Table, TableIter},
 };
-use keep::*;
+use keep::prelude::*;
 use std::hash::{BuildHasher, Hash, RandomState};
 
 
@@ -40,7 +40,7 @@ where
     }
 
     /// Inserts a new key-value pair into the map or updates an existing one...
-    pub fn insert(&self, key: Key, val: impl Heaped<Val>) -> Option<Keep<Val>>
+    pub fn insert(&self, key: Key, val: impl Into<Guard<Val>>) -> Option<Guard<Val>>
     {
         let hash = self.hash(&key);
         let entry_node = EntryNode::new(key, val, hash);

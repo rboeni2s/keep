@@ -9,7 +9,7 @@ use crate::window::WindowEvent;
 use anyhow::Context;
 use keep::Keep;
 use plug::prelude::*;
-use plugmap::DynBuffer;
+use plugmap::RingBuffer;
 use winit::event_loop::EventLoopProxy;
 
 
@@ -42,7 +42,7 @@ pub struct Application<ServiceEvent>
     should_quit: AtomicBool,
 
     #[default]
-    tasks: DynBuffer<TaskFn>,
+    tasks: RingBuffer<TaskFn>,
 }
 
 

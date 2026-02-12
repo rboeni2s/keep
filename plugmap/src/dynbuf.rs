@@ -187,20 +187,17 @@ impl<T> ConcurrentBuffer<T>
 
 
 //TODO: Resizing does not work reliably in mt
-pub struct DynBuffer<T>
+pub struct RingBuffer<T>
 {
-    min_size: usize,
-    buffer: Keep<ConcurrentBuffer<T>>,
-    resize_buffer: Keep<ConcurrentBuffer<T>>,
-    resize_started: AtomicBool,
-    resize_finished: AtomicBool,
-    count: AtomicUsize,
+    buffer: ConcurrentBuffer<T>,
+    write_index: AtomicUsize,
+    read_index: AtomicUsize,
 }
 
 
-impl<T> DynBuffer<T>
+impl<T> RingBuffer<T>
 {
-    const MIN_SIZE: usize = 4;
+    const MIN_SIZE: usize = 32;
 
     /// Creates a new dynamic buffer.
     pub fn new() -> Self
@@ -208,183 +205,61 @@ impl<T> DynBuffer<T>
         Self::with_hint(Self::MIN_SIZE)
     }
 
-
-    /// Create a `DynBuffer<T>` with a capacity of `hint^2`
+    /// Create a `DynBuffer<T>` with a capacity of `hint`
     ///
     /// A hint of at least `Self::MIN_SIZE` will be enforced.
     pub fn with_hint(hint: usize) -> Self
     {
         Self {
-            min_size: hint.max(Self::MIN_SIZE),
-            buffer: Keep::new(ConcurrentBuffer::with_capacity(
-                1 << hint.max(Self::MIN_SIZE),
-            )),
-            resize_buffer: Keep::new(ConcurrentBuffer::with_capacity(0)),
-            resize_started: AtomicBool::new(false),
-            resize_finished: AtomicBool::new(true),
-            count: AtomicUsize::new(0),
+            buffer: ConcurrentBuffer::with_capacity(hint.max(Self::MIN_SIZE)),
+            write_index: AtomicUsize::new(0),
+            read_index: AtomicUsize::new(0),
         }
     }
 
     /// Pushes a value `val` into the buffer
     pub fn push(&self, val: impl Into<Guard<T>>)
     {
-        self.push_keep(Keep::new(val));
+        let index = self
+            .write_index
+            .fetch_update(Ordering::Release, Ordering::Acquire, |i| {
+                Some((i + 1) % self.buffer.capacity)
+            })
+            .unwrap();
+
+        self.buffer.insert(index, val);
     }
 
-    pub fn push_keep(&self, mut val: Keep<T>)
-    {
-        loop
-        {
-            // Help with resizing if a resize is ongoing...
-            self.maybe_resize();
-
-            let count = match self.buffer.read().put_keep(val)
-            {
-                Err(v) =>
-                {
-                    val = v;
-                    self.count.load(Ordering::Acquire)
-                }
-
-                Ok(_) =>
-                {
-                    let count = self.count.fetch_add(1, Ordering::AcqRel) + 1;
-                    self.consider_resize(count);
-                    return;
-                }
-            };
-
-            self.consider_resize(count);
-        }
-    }
 
     /// Pops a value from the buffer
     pub fn pop(&self) -> Option<Keep<T>>
     {
-        loop
-        {
-            if self.count.load(Ordering::Acquire) == 0
-            {
-                return None;
-            }
-
-            // Help with ongoing resize
-            self.maybe_resize();
-
-            // Try to pop an item
-            let ret = self.buffer.read().pop();
-
-            // If something was popped of, adjust size and return
-            if ret.is_some()
-            {
-                let count = self.count.fetch_sub(1, Ordering::AcqRel);
-                self.consider_resize(count);
-                return ret;
-            }
-        }
-    }
-
-    fn consider_resize(&self, index: usize) -> bool
-    {
-        let mut buf = None;
-        let capacity = self.buffer.read().capacity;
-        let new_buffer = self.resize_buffer.read();
-
-        // instant return if resize is ongoing
-        if self.resize_started.load(Ordering::Acquire)
-        {
-            return true;
-        }
-
-        // Do a resize up if the buffer is almost full
-        if capacity <= index + 2
-        {
-            buf = Some(ConcurrentBuffer::with_capacity(capacity << 1));
-        }
-        // Do a resize down if the buffer is less than half full - 2
-        else if (capacity >> 1) - 1 > index && capacity > (1 << self.min_size)
-        {
-            buf = Some(ConcurrentBuffer::with_capacity(capacity >> 1));
-        }
-
-        if let Some(buf) = buf
-            && self
-                .resize_started
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
-        {
-            // Setup resize buffer
-            self.resize_buffer.write(buf);
-            return true;
-        }
-
-        false
-    }
-
-    fn resize(&self)
-    {
-        let buffer = self.resize_buffer.read();
-        let old_buffer = self.buffer.read();
-
-        loop
-        {
-            match old_buffer.pop()
-            {
-                Some(val) => _ = buffer.put_keep(val), // this will not fail
-
-                None =>
+        let write_index = self.write_index.load(Ordering::Acquire);
+        let read_index = self
+            .read_index
+            .fetch_update(Ordering::Release, Ordering::Acquire, |i| {
+                if i == write_index && self.buffer.get(i).is_none()
                 {
-                    if self
-                        .resize_started
-                        .compare_exchange_weak(true, false, Ordering::AcqRel, Ordering::Relaxed)
-                        .is_ok()
-                    {
-                        self.buffer.swallow(&self.resize_buffer);
-                        self.resize_buffer
-                            .swallow(&Keep::new(ConcurrentBuffer::with_capacity(0)));
-                        break;
-                    }
+                    None
                 }
-            }
-        }
-    }
+                else
+                {
+                    Some((i + 1) % self.buffer.capacity)
+                }
+            });
 
-    fn maybe_resize(&self)
-    {
-        // Make all but one thread wait
-        // The thread the swaps resize_finished to false will handle the resize
-        // all other threads will wait.
-        if self.resize_started.load(Ordering::Acquire)
+        if let Ok(read_index) = read_index
         {
-            if self
-                .resize_finished
-                .compare_exchange(true, false, Ordering::Release, Ordering::Relaxed)
-                .is_ok()
-            {
-                self.resize();
-                self.resize_finished.store(true, Ordering::Release);
-                self.resize_started.store(false, Ordering::Release);
-                return;
-            }
+            return self.buffer.remove(read_index);
         }
 
-        // Wait until the resize is finished
-        let mut resize_finished = self.resize_finished.load(Ordering::Acquire);
-        if resize_finished == false
-        {
-            while !self.resize_finished.load(Ordering::Acquire)
-            {
-                std::hint::spin_loop();
-            }
-        }
+        None
     }
 
     /// Generates a snapshot of the buffer
     pub fn snapshot(&self) -> Snapshot<T>
     {
-        self.maybe_resize();
-        Snapshot::from(&*self.buffer.read())
+        Snapshot::from(&self.buffer)
     }
 
     /// Clears the buffer and returns it's contents
@@ -392,7 +267,7 @@ impl<T> DynBuffer<T>
     {
         let max = max.unwrap_or(usize::MAX);
         let mut count = 0;
-        let mut buffer = Vec::with_capacity(self.buffer.read().capacity);
+        let mut buffer = Vec::with_capacity(self.buffer.capacity);
 
         while let Some(item) = self.pop()
         {
@@ -410,7 +285,7 @@ impl<T> DynBuffer<T>
 }
 
 
-impl<T> Default for DynBuffer<T>
+impl<T> Default for RingBuffer<T>
 {
     fn default() -> Self
     {

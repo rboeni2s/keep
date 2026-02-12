@@ -1,9 +1,7 @@
-use std::time::{Duration, Instant};
-
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent as PlatformWindowEvent,
-    event_loop::{ActiveEventLoop, ControlFlow::WaitUntil},
+    event_loop::ActiveEventLoop,
     window::{Window as PlatformWindow, WindowAttributes, WindowId},
 };
 
@@ -123,6 +121,7 @@ impl ApplicationHandler<ApplicationEvent> for WindowHandler
             ApplicationEvent::TickWindow =>
             {
                 if let Some((w, h)) = self.latest_resize_event.take()
+                    && self.window.is_some()
                 {
                     self.window_event_emitter.emit(WindowEvent::Resize(w, h));
                 }

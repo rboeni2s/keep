@@ -1,5 +1,5 @@
 use keep::prelude::Guard;
-use plugmap::{ConcurrentBuffer, DynBuffer};
+use plugmap::{ConcurrentBuffer, RingBuffer};
 use std::{sync::atomic::AtomicUsize, thread};
 
 
@@ -45,7 +45,7 @@ fn concurrent_buffer_put()
 #[test]
 fn dynbuf_st()
 {
-    let buffer = DynBuffer::new();
+    let buffer = RingBuffer::new();
     let og = (0..256).collect::<Vec<_>>();
 
     for i in &og
@@ -62,15 +62,15 @@ fn dynbuf_st()
     }
 
     numbers.sort();
-    assert_eq!(og, numbers);
+    assert_eq!(og[(256 - 32)..], numbers);
 }
 
 
-#[ignore = "disable this test until the dynbuf deadlocks are fixed..."]
+// #[ignore = "disable this test until the dynbuf deadlocks are fixed..."]
 #[test]
 fn dynbuf_mt()
 {
-    let buffer = Guard::new(DynBuffer::new());
+    let buffer = Guard::new(RingBuffer::new());
     let original = (0..32).collect::<Vec<_>>();
     let finished = Guard::new(AtomicUsize::new(0));
 

@@ -9,7 +9,7 @@ mod resizer;
 mod table;
 
 
-pub use dynbuf::{ConcurrentBuffer, DynBuffer};
+pub use dynbuf::{ConcurrentBuffer, RingBuffer};
 pub use map::PlugMap;
 
 

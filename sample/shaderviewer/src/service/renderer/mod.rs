@@ -6,8 +6,9 @@ use plug::prelude::*;
 use winit::window::Window as PlatformWindow;
 
 
-mod renderer_impl;
-use renderer_impl::RenderState;
+mod pipeline;
+mod state;
+use state::RenderState;
 
 
 #[service]

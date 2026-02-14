@@ -1,5 +1,6 @@
 use wgpu::VertexBufferLayout;
 
+
 pub(crate) struct Pipeline
 {
     pub pipeline: wgpu::RenderPipeline,
@@ -55,7 +56,7 @@ impl Pipeline
             conservative: false,
         };
 
-        let multisample_state = wgpu::MultisampleState {
+        let multi_sample_state = wgpu::MultisampleState {
             count: 1,
             mask: !0,
             alpha_to_coverage_enabled: false,
@@ -67,7 +68,7 @@ impl Pipeline
             vertex: vertex_state,
             primitive: primitive_state,
             depth_stencil: None,
-            multisample: multisample_state,
+            multisample: multi_sample_state,
             fragment: Some(fragment_state),
             multiview_mask: None,
             cache: None,

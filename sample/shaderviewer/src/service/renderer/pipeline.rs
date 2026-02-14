@@ -1,15 +1,20 @@
+use wgpu::VertexBufferLayout;
+
 pub(crate) struct Pipeline
 {
-    pub(crate) pipeline: wgpu::RenderPipeline,
+    pub pipeline: wgpu::RenderPipeline,
 }
 
 
 impl Pipeline
 {
-    pub(crate) const TEST_SHADER_SRC: &str = include_str!(crate::rel!("/shaders/test.wgsl"));
+    pub const TEST_SHADER_SRC: &str = include_str!(crate::rel!("/shaders/test.wgsl"));
 
-
-    pub(crate) fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> anyhow::Result<Self>
+    pub fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        vertex_buffer_format: VertexBufferLayout,
+    ) -> anyhow::Result<Self>
     {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Test Shader"),
@@ -26,7 +31,7 @@ impl Pipeline
             module: &shader,
             entry_point: Some("vertex_main"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
-            buffers: &[],
+            buffers: &[vertex_buffer_format],
         };
 
         let fragment_state = wgpu::FragmentState {
@@ -69,5 +74,10 @@ impl Pipeline
         });
 
         Ok(Self { pipeline })
+    }
+
+    pub fn set_for_pass(&self, render_pass: &mut wgpu::RenderPass)
+    {
+        render_pass.set_pipeline(&self.pipeline);
     }
 }

@@ -7,7 +7,10 @@ use std::sync::{
 use wgpu::rwh::{HasDisplayHandle, HasWindowHandle};
 use winit::window::Window as PlatformWindow;
 
-use crate::service::renderer::pipeline::Pipeline;
+use crate::service::renderer::{
+    buffer::{self, IndexBuffer, VertexBuffer},
+    pipeline::Pipeline,
+};
 
 
 /// Wrapper struct to extract the window and display handle from `Guard<PlatformWindow>`
@@ -37,7 +40,9 @@ pub struct RenderState
     config: Mutex<wgpu::SurfaceConfiguration>,
     surface_out_of_date: AtomicBool,
     render_pipeline: Pipeline,
+    vertex_buffer: VertexBuffer<'static>,
     window: Guard<PlatformWindow>,
+    index_buffer: IndexBuffer,
 }
 
 
@@ -164,13 +169,17 @@ impl RenderState
             view_formats: vec![],
         };
 
+
+        // Setup buffers
+        let vertex_buffer = VertexBuffer::new(&device, buffer::SQUARE_VERTICES);
+        let index_buffer = IndexBuffer::new(&device, buffer::SQUARE_INDICES);
+
+        // Setup pipeline
+        let render_pipeline =
+            Pipeline::new(&device, surface_format, vertex_buffer.layout().clone())?;
+
         let info = adapter.get_info();
-
         info!("Initialized renderer for adapter:\n{info:#?}");
-
-        info!("Creating Render-Pipeline...");
-        let render_pipeline = Pipeline::new(&device, surface_format)?;
-        info!("Render-Pipeline with default shader created");
 
         let me = Self {
             surface,
@@ -180,6 +189,8 @@ impl RenderState
             config: Mutex::new(surface_config),
             surface_out_of_date: AtomicBool::new(true),
             window,
+            vertex_buffer,
+            index_buffer,
         };
 
         // Finally perform a initial window resize
@@ -246,8 +257,13 @@ impl RenderState
             multiview_mask: None,
         });
 
-        render_pass.set_pipeline(&self.render_pipeline.pipeline);
-        render_pass.draw(0..3, 0..1);
+        // Set pipeline and buffers
+        self.render_pipeline.set_for_pass(&mut render_pass);
+        self.vertex_buffer.set_for_pass(&mut render_pass);
+        self.index_buffer.set_for_pass(&mut render_pass);
+
+        // Draw!
+        self.index_buffer.draw_index(&mut render_pass);
 
         drop(render_pass);
         self.queue.submit([encoder.finish()]);

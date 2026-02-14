@@ -6,6 +6,7 @@ use plug::prelude::*;
 use winit::window::Window as PlatformWindow;
 
 
+mod buffer;
 mod pipeline;
 mod state;
 use state::RenderState;

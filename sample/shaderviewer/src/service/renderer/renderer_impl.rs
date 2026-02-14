@@ -8,17 +8,6 @@ use wgpu::rwh::{HasDisplayHandle, HasWindowHandle};
 use winit::window::Window as PlatformWindow;
 
 
-pub struct RenderState
-{
-    surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    config: Mutex<wgpu::SurfaceConfiguration>,
-    surface_out_of_date: AtomicBool,
-    window: Guard<PlatformWindow>,
-}
-
-
 /// Wrapper struct to extract the window and display handle from `Guard<PlatformWindow>`
 struct WindowWrapper(Guard<PlatformWindow>);
 impl HasDisplayHandle for WindowWrapper
@@ -35,6 +24,18 @@ impl HasWindowHandle for WindowWrapper
     {
         self.0.window_handle()
     }
+}
+
+
+pub struct RenderState
+{
+    surface: wgpu::Surface<'static>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: Mutex<wgpu::SurfaceConfiguration>,
+    surface_out_of_date: AtomicBool,
+    render_pipeline: Pipeline,
+    window: Guard<PlatformWindow>,
 }
 
 
@@ -165,10 +166,15 @@ impl RenderState
 
         info!("Initialized renderer for adapter:\n{info:#?}");
 
+        info!("Creating Render-Pipeline...");
+        let render_pipeline = Pipeline::new(&device, surface_format)?;
+        info!("Render-Pipeline with default shader created");
+
         let me = Self {
             surface,
             device,
             queue,
+            render_pipeline,
             config: Mutex::new(surface_config),
             surface_out_of_date: AtomicBool::new(true),
             window,
@@ -221,7 +227,7 @@ impl RenderState
                 label: Some("Render Encoder"),
             });
 
-        let _render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Render Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &view,
@@ -238,10 +244,87 @@ impl RenderState
             multiview_mask: None,
         });
 
-        drop(_render_pass);
+        render_pass.set_pipeline(&self.render_pipeline.pipeline);
+        render_pass.draw(0..3, 0..1);
+
+        drop(render_pass);
         self.queue.submit([encoder.finish()]);
         output.present();
 
         Ok(())
+    }
+}
+
+
+struct Pipeline
+{
+    pipeline: wgpu::RenderPipeline,
+}
+
+
+impl Pipeline
+{
+    const TEST_SHADER_SRC: &str = include_str!(crate::rel!("/shaders/test.wgsl"));
+
+    fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> anyhow::Result<Self>
+    {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Test Shader"),
+            source: wgpu::ShaderSource::Wgsl(Self::TEST_SHADER_SRC.into()),
+        });
+
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Render Pipeline Layout"),
+            bind_group_layouts: &[],
+            immediate_size: 0,
+        });
+
+        let vertex_state = wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vertex_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        };
+
+        let fragment_state = wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fragment_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        };
+
+        let primitive_state = wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            unclipped_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
+        };
+
+        let multisample_state = wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        };
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Render-Pipeline"),
+            layout: Some(&layout),
+            vertex: vertex_state,
+            primitive: primitive_state,
+            depth_stencil: None,
+            multisample: multisample_state,
+            fragment: Some(fragment_state),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        Ok(Self { pipeline })
     }
 }

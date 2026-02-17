@@ -7,15 +7,15 @@ use wgpu::util::DeviceExt;
 pub const TRIANGLE_VERTICES: &[Vertex] = &[
     Vertex {
         pos: [0.0, 0.5, 0.0],
-        col: [1.0, 0.0, 0.0],
+        tex: [0.0, -1.0],
     },
     Vertex {
         pos: [-0.5, -0.5, 0.0],
-        col: [0.0, 1.0, 0.0],
+        tex: [-1.0, -1.0],
     },
     Vertex {
         pos: [0.5, -0.5, 0.0],
-        col: [0.0, 0.0, 1.0],
+        tex: [1.0, -1.0],
     },
 ];
 
@@ -25,20 +25,20 @@ pub const TRIANGLE_INDICES: &[u16] = &[0, 1, 2];
 
 pub const SQUARE_VERTICES: &[Vertex] = &[
     Vertex {
-        pos: [-0.5, -0.5, 0.0],
-        col: [1.0, 0.0, 0.0],
+        pos: [-0.55, -0.55, 0.0],
+        tex: [0.0, 0.0],
     },
     Vertex {
-        pos: [0.5, -0.5, 0.0],
-        col: [0.0, 1.0, 0.0],
+        pos: [0.55, -0.55, 0.0],
+        tex: [1.0, 0.0],
     },
     Vertex {
-        pos: [-0.5, 0.5, 0.0],
-        col: [0.0, 0.0, 1.0],
+        pos: [-0.55, 0.55, 0.0],
+        tex: [0.0, 1.0],
     },
     Vertex {
-        pos: [0.5, 0.5, 0.0],
-        col: [1.0, 0.0, 1.0],
+        pos: [0.55, 0.55, 0.0],
+        tex: [1.0, 1.0],
     },
 ];
 
@@ -51,7 +51,7 @@ pub const SQUARE_INDICES: &[u16] = &[0, 1, 2, 3, 2, 1];
 pub struct Vertex
 {
     pos: [f32; 3],
-    col: [f32; 3],
+    tex: [f32; 2],
 }
 
 
@@ -64,10 +64,10 @@ impl Vertex
             offset: 0,
             shader_location: 0,
         },
-        // After that is the color vector with 3xf32
+        // After that is the texture coordinate (tex) vector with 2xf32
         wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Float32x3,
-            offset: size_of::<[f32; 3]>() as u64, // The color vector has to be offset by the size of the position vector
+            format: wgpu::VertexFormat::Float32x2,
+            offset: size_of::<[f32; 3]>() as u64, // The tex vector has to be offset by the size of the position vector
             shader_location: 1,
         },
     ];

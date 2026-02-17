@@ -1,5 +1,6 @@
 use winit::{
     application::ApplicationHandler,
+    dpi::PhysicalSize,
     event::WindowEvent as PlatformWindowEvent,
     event_loop::ActiveEventLoop,
     window::{Window as PlatformWindow, WindowAttributes, WindowId},
@@ -43,7 +44,11 @@ impl ApplicationHandler<ApplicationEvent> for WindowHandler
 {
     fn resumed(&mut self, event_loop: &ActiveEventLoop)
     {
-        match event_loop.create_window(WindowAttributes::default())
+        let window_attributes = WindowAttributes::default()
+            .with_inner_size(PhysicalSize::new(420, 420))
+            .with_title("Shader Viewer");
+
+        match event_loop.create_window(window_attributes)
         {
             Ok(window) =>
             {

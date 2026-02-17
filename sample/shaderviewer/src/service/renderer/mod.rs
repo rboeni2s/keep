@@ -9,6 +9,7 @@ use winit::window::Window as PlatformWindow;
 mod buffer;
 mod pipeline;
 mod state;
+mod texture;
 use state::RenderState;
 
 

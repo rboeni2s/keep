@@ -1,5 +1,7 @@
 use wgpu::VertexBufferLayout;
 
+use crate::service::renderer::texture::TextureBindGroupLayout;
+
 
 pub(crate) struct Pipeline
 {
@@ -14,6 +16,7 @@ impl Pipeline
     pub fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
+        layout: &TextureBindGroupLayout,
         vertex_buffer_format: VertexBufferLayout,
     ) -> anyhow::Result<Self>
     {
@@ -24,7 +27,7 @@ impl Pipeline
 
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[],
+            bind_group_layouts: &[layout],
             immediate_size: 0,
         });
 

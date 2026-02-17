@@ -1,14 +1,24 @@
+@group(0)
+@binding(0)
+var texture_diffuse: texture_2d<f32>;
+
+
+@group(0)
+@binding(1)
+var sampler_diffuse: sampler;
+
+
 struct VertexInput
 {
     @location(0) pos: vec3<f32>,
-    @location(1) col: vec3<f32>,
+    @location(1) tex: vec2<f32>,
 };
 
 
 struct VertexOutput
 {
     @builtin(position) pos: vec4<f32>,
-    @location(0) col: vec3<f32>,  
+    @location(0) tex: vec2<f32>,  
 };
 
 
@@ -16,7 +26,7 @@ struct VertexOutput
 fn vertex_main(vert: VertexInput) -> VertexOutput
 {
     var out: VertexOutput;
-    out.col = vert.col;
+    out.tex = vert.tex;
     out.pos = vec4<f32>(vert.pos, 1.0);
     return out;
 }
@@ -25,5 +35,10 @@ fn vertex_main(vert: VertexInput) -> VertexOutput
 @fragment
 fn fragment_main(vert: VertexOutput) -> @location(0) vec4<f32>
 {
-    return vec4<f32>(vert.col, 1.0);
+    // flip y axis
+    var tex = vert.tex;
+    tex.y = 1 - tex.y;
+    
+    return textureSample(texture_diffuse, sampler_diffuse, tex);
 }
+ 

@@ -10,6 +10,7 @@ use winit::window::Window as PlatformWindow;
 use crate::service::renderer::{
     buffer::{self, IndexBuffer, VertexBuffer},
     pipeline::Pipeline,
+    texture::{AsocTexture, Image, Texture, TextureBindGroupLayout},
 };
 
 
@@ -43,6 +44,8 @@ pub struct RenderState
     vertex_buffer: VertexBuffer<'static>,
     window: Guard<PlatformWindow>,
     index_buffer: IndexBuffer,
+    texture_bind_group_layout: TextureBindGroupLayout,
+    diffuse_bind_group: wgpu::BindGroup,
 }
 
 
@@ -169,14 +172,25 @@ impl RenderState
             view_formats: vec![],
         };
 
-
         // Setup buffers
         let vertex_buffer = VertexBuffer::new(&device, buffer::SQUARE_VERTICES);
         let index_buffer = IndexBuffer::new(&device, buffer::SQUARE_INDICES);
 
+        // Create a texture (this is done here just for testing)
+        let image = Image::new(include_bytes!(crate::rel!("/textures/miku.jpg")))?;
+        let texture = Texture::from(AsocTexture::from_image(&device, &queue, image));
+
+        // Create a texture bind group
+        let texture_bind_group_layout = TextureBindGroupLayout::new(&device);
+        let diffuse_bind_group = texture_bind_group_layout.create_bind_group(&device, &texture);
+
         // Setup pipeline
-        let render_pipeline =
-            Pipeline::new(&device, surface_format, vertex_buffer.layout().clone())?;
+        let render_pipeline = Pipeline::new(
+            &device,
+            surface_format,
+            &texture_bind_group_layout,
+            vertex_buffer.layout().clone(),
+        )?;
 
         let info = adapter.get_info();
         info!("Initialized renderer for adapter:\n{info:#?}");
@@ -191,6 +205,8 @@ impl RenderState
             window,
             vertex_buffer,
             index_buffer,
+            texture_bind_group_layout,
+            diffuse_bind_group,
         };
 
         // Finally perform a initial window resize
@@ -247,7 +263,12 @@ impl RenderState
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 10.0 / 255.0,
+                        g: 12.0 / 255.0,
+                        b: 14.0 / 255.0,
+                        a: 1.0,
+                    }),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -259,6 +280,7 @@ impl RenderState
 
         // Set pipeline and buffers
         self.render_pipeline.set_for_pass(&mut render_pass);
+        render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
         self.vertex_buffer.set_for_pass(&mut render_pass);
         self.index_buffer.set_for_pass(&mut render_pass);
 

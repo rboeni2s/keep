@@ -1,8 +1,9 @@
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
-    event::WindowEvent as PlatformWindowEvent,
+    event::{ElementState, KeyEvent, WindowEvent as PlatformWindowEvent},
     event_loop::ActiveEventLoop,
+    keyboard::KeyCode,
     window::{Window as PlatformWindow, WindowAttributes, WindowId},
 };
 
@@ -19,22 +20,35 @@ pub enum WindowEvent
 }
 
 
+#[derive(Debug, Clone)]
+pub enum InputEvent
+{
+    Pressed(KeyCode),
+    Released(KeyCode),
+}
+
+
 pub struct WindowHandler
 {
     window: Option<Guard<PlatformWindow>>,
     window_event_emitter: Layer<EventEmitter<WindowEvent>>,
     latest_resize_event: Option<(u32, u32)>,
+    input_event_emitter: Guard<Box<EventEmitter<InputEvent>>>,
 }
 
 
 impl WindowHandler
 {
-    pub fn new(window_event_emitter: Layer<EventEmitter<WindowEvent>>) -> Self
+    pub fn new(
+        window_event_emitter: Layer<EventEmitter<WindowEvent>>,
+        input_event_emitter: Layer<EventEmitter<InputEvent>>,
+    ) -> Self
     {
         Self {
             window: None,
             latest_resize_event: None,
             window_event_emitter,
+            input_event_emitter,
         }
     }
 }
@@ -114,6 +128,30 @@ impl ApplicationHandler<ApplicationEvent> for WindowHandler
                 self.latest_resize_event = Some((size.width, size.height))
             }
 
+            PlatformWindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key: winit::keyboard::PhysicalKey::Code(key),
+                        state,
+                        ..
+                    },
+                ..
+            } =>
+            {
+                match state
+                {
+                    ElementState::Pressed =>
+                    {
+                        self.input_event_emitter.emit(InputEvent::Pressed(key))
+                    }
+
+                    ElementState::Released =>
+                    {
+                        self.input_event_emitter.emit(InputEvent::Released(key))
+                    }
+                }
+            }
+
             _ => (),
         }
     }
@@ -129,6 +167,11 @@ impl ApplicationHandler<ApplicationEvent> for WindowHandler
                     && self.window.is_some()
                 {
                     self.window_event_emitter.emit(WindowEvent::Resize(w, h));
+                }
+
+                if let Some(window) = &self.window
+                {
+                    window.request_redraw();
                 }
             }
             _ => (),

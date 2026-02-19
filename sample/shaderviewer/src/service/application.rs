@@ -13,7 +13,7 @@ use plugmap::RingBuffer;
 use winit::event_loop::EventLoopProxy;
 
 
-type TaskFn = Box<dyn Fn(&Registry<ServiceEvent>) + 'static>;
+type TaskFn = Box<dyn Fn(&Registry<ServiceEvent>, f32) + 'static>;
 
 
 #[non_exhaustive]
@@ -41,7 +41,8 @@ pub struct Application<ServiceEvent>
     #[value = AtomicBool::new(false)]
     should_quit: AtomicBool,
 
-    #[default]
+    #[value = RingBuffer::with_hint(128)]
+    // This cannot be a ring buffer but needs to be some kind of concurrent vector
     tasks: RingBuffer<TaskFn>,
 }
 
@@ -51,6 +52,7 @@ impl Application
     pub fn run_application(&self) -> anyhow::Result<()>
     {
         let reg = REGISTRY.get().context("Failed to fetch global registry")?;
+        let mut delta = 0.0;
 
         self.app_event_emitter.emit(ApplicationEvent::Start);
 
@@ -79,7 +81,7 @@ impl Application
             // Run all main loop tasks...
             for task in self.tasks.snapshot().as_ref()
             {
-                task(reg);
+                task(reg, delta);
             }
 
             // Sleep to meet 60fps target
@@ -88,6 +90,8 @@ impl Application
             {
                 thread::sleep(sleep_time)
             }
+
+            delta = frame_start.elapsed().as_secs_f32();
         }
 
         Ok(())
@@ -110,7 +114,7 @@ impl Application
     }
 
     /// Adds a task to be executed repeatedly in the main-loop
-    pub fn add_task(&self, task: impl Fn(&Registry<ServiceEvent>) + 'static)
+    pub fn add_task(&self, task: impl Fn(&Registry<ServiceEvent>, f32) + 'static)
     {
         let boxed: TaskFn = Box::new(task);
         self.tasks.push(boxed);

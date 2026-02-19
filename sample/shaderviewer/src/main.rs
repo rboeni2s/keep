@@ -3,10 +3,11 @@ extern crate log;
 
 use plug::prelude::*;
 use shaderviewer::service::application::{Application, ApplicationEvent};
+use shaderviewer::service::camera::Camera;
 use shaderviewer::service::file_watcher::Watcher;
 use shaderviewer::service::renderer::Renderer;
 use shaderviewer::service::{REGISTRY, ServiceEvent};
-use shaderviewer::window::{WindowEvent, WindowHandler};
+use shaderviewer::window::{InputEvent, WindowEvent, WindowHandler};
 use std::thread;
 use winit::event_loop::{ControlFlow, EventLoop, EventLoopProxy};
 
@@ -29,14 +30,15 @@ fn run() -> anyhow::Result<()>
     }
 
     // Build the registry
-    let reg: Registry<ServiceEvent> = build_reg!(Application, Watcher, Renderer);
+    let reg: Registry<ServiceEvent> = build_reg!(Application, Watcher, Renderer, Camera);
 
     // Share the registry globally
     let reg = REGISTRY.get_or_init(move || reg);
 
     // Create the window handler
     let window_event_emitter = reg.get_unchecked::<EventEmitter<WindowEvent>>();
-    let mut window_handler = WindowHandler::new(window_event_emitter);
+    let input_event_emitter = reg.get_unchecked::<EventEmitter<InputEvent>>();
+    let mut window_handler = WindowHandler::new(window_event_emitter, input_event_emitter);
 
     // Create the event loop
     let event_loop: EventLoop<ApplicationEvent> = EventLoop::with_user_event().build()?;

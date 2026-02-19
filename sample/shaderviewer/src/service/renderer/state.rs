@@ -1,4 +1,5 @@
 use anyhow::Context;
+use cgmath::Point3;
 use keep::Guard;
 use std::sync::{
     Mutex,
@@ -245,8 +246,6 @@ impl RenderState
 
     pub fn render(&self) -> anyhow::Result<()>
     {
-        self.window.request_redraw();
-
         if self.surface_out_of_date.load(Ordering::Acquire)
         {
             return Ok(());
@@ -303,5 +302,14 @@ impl RenderState
         output.present();
 
         Ok(())
+    }
+
+    #[inline]
+    pub fn set_camera_origin(&self, origin: Point3<f32>)
+    {
+        if self.camera.set_origin(origin) != origin
+        {
+            self.camera.rebuild_projection_matrix(&self.device);
+        }
     }
 }

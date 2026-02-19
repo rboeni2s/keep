@@ -53,7 +53,7 @@ impl Renderer
         Ok(())
     }
 
-    fn event_handler(reg: &Registry<ServiceEvent>)
+    fn event_handler(reg: &Registry<ServiceEvent>, _delta: f32)
     {
         let renderer = reg.get_unchecked::<Renderer>();
 
@@ -81,6 +81,15 @@ impl Renderer
                 let _ = state.render();
                 frame_done = true;
             }
+        }
+    }
+
+    #[inline]
+    pub fn set_camera_origin(&self, origin: cgmath::Point3<f32>)
+    {
+        if let Some(state) = &*self.state.read()
+        {
+            state.set_camera_origin(origin);
         }
     }
 }

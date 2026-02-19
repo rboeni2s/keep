@@ -3,6 +3,7 @@ use std::sync::OnceLock;
 
 
 pub mod application;
+pub mod camera;
 pub mod file_watcher;
 pub mod renderer;
 

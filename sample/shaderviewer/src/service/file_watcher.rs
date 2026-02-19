@@ -18,7 +18,7 @@ pub struct Watcher<ServiceEvent>
 
 impl Watcher
 {
-    fn tick(_reg: &Registry<ServiceEvent>)
+    fn tick(_reg: &Registry<ServiceEvent>, _delta: f32)
     {
         // info!("i am being ticked...");
     }

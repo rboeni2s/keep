@@ -5,8 +5,8 @@ use wgpu::util::DeviceExt;
 
 pub struct Camera
 {
-    origin: Point3<f32>,
-    target: Point3<f32>,
+    origin: Keep<Point3<f32>>,
+    target: Keep<Point3<f32>>,
     up: Vector3<f32>,
     aspect: Keep<f32>,
     fov: f32,
@@ -27,7 +27,7 @@ impl Camera
 
     pub fn build_view_projection_matrix(&self) -> Matrix4<f32>
     {
-        let view = Matrix4::look_at_rh(self.origin, self.target, self.up);
+        let view = Matrix4::look_at_rh(*self.origin.read(), *self.target.read(), self.up);
         let proj = cgmath::perspective(Deg(self.fov), *self.aspect.read(), self.near, self.far);
         Self::OPENGL_TO_WGPU_MATRIX * proj * view
     }
@@ -58,6 +58,12 @@ impl Camera
 
         self.proj_buffer.write(Some(buffer));
     }
+
+    #[inline]
+    pub fn set_origin(&self, origin: Point3<f32>) -> Point3<f32>
+    {
+        *self.origin.swap(origin)
+    }
 }
 
 
@@ -66,8 +72,8 @@ impl Default for Camera
     fn default() -> Self
     {
         Self {
-            origin: Point3::new(0.0, 0.0, 2.0),
-            target: Point3::new(0.0, 0.0, 0.0),
+            origin: Point3::new(0.0, 0.0, 2.0).into(),
+            target: Point3::new(0.0, 0.0, 0.0).into(),
             up: Vector3::unit_y(),
             aspect: Keep::new(1.0),
             fov: 50.0,

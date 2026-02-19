@@ -9,6 +9,7 @@ use winit::window::Window as PlatformWindow;
 
 use crate::service::renderer::{
     buffer::{self, IndexBuffer, VertexBuffer},
+    camera::{Camera, CameraBuffer},
     pipeline::Pipeline,
     texture::{AsocTexture, Image, Texture, TextureBindGroupLayout},
 };
@@ -44,6 +45,7 @@ pub struct RenderState
     vertex_buffer: VertexBuffer<'static>,
     window: Guard<PlatformWindow>,
     index_buffer: IndexBuffer,
+    camera: CameraBuffer,
     texture_bind_group_layout: TextureBindGroupLayout,
     diffuse_bind_group: wgpu::BindGroup,
 }
@@ -184,11 +186,15 @@ impl RenderState
         let texture_bind_group_layout = TextureBindGroupLayout::new(&device);
         let diffuse_bind_group = texture_bind_group_layout.create_bind_group(&device, &texture);
 
+        // Create the camera
+        let camera = CameraBuffer::new(&device, Camera::default());
+
         // Setup pipeline
         let render_pipeline = Pipeline::new(
             &device,
             surface_format,
             &texture_bind_group_layout,
+            &camera,
             vertex_buffer.layout().clone(),
         )?;
 
@@ -207,6 +213,7 @@ impl RenderState
             index_buffer,
             texture_bind_group_layout,
             diffuse_bind_group,
+            camera,
         };
 
         // Finally perform a initial window resize
@@ -230,8 +237,9 @@ impl RenderState
         self.surface.configure(&self.device, &config);
         self.surface_out_of_date.store(false, Ordering::Release);
 
-        info!("Surface resize finished ({width}, {height})");
+        self.camera.update_aspect(&self.device, width, height);
 
+        info!("Surface resize finished ({width}, {height})");
         Ok(())
     }
 
@@ -278,9 +286,12 @@ impl RenderState
             multiview_mask: None,
         });
 
+        let proj_bind_group = self.camera.create_bind_group(&self.device);
+
         // Set pipeline and buffers
         self.render_pipeline.set_for_pass(&mut render_pass);
         render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
+        render_pass.set_bind_group(1, &proj_bind_group, &[]);
         self.vertex_buffer.set_for_pass(&mut render_pass);
         self.index_buffer.set_for_pass(&mut render_pass);
 

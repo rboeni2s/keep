@@ -8,6 +8,11 @@ var texture_diffuse: texture_2d<f32>;
 var sampler_diffuse: sampler;
 
 
+@group(1)
+@binding(0)
+var<uniform> camera: mat4x4<f32>;
+
+
 struct VertexInput
 {
     @location(0) pos: vec3<f32>,
@@ -27,7 +32,7 @@ fn vertex_main(vert: VertexInput) -> VertexOutput
 {
     var out: VertexOutput;
     out.tex = vert.tex;
-    out.pos = vec4<f32>(vert.pos, 1.0);
+    out.pos = camera * vec4<f32>(vert.pos, 1.0);
     return out;
 }
 

@@ -7,6 +7,7 @@ use winit::window::Window as PlatformWindow;
 
 
 mod buffer;
+mod camera;
 mod pipeline;
 mod state;
 mod texture;

@@ -1,4 +1,4 @@
-use keep::*;
+use keep::prelude::*;
 
 
 pub enum Entry<Key, Val>
@@ -99,7 +99,7 @@ where
         }
     }
 
-    pub fn new(key: Key, val: impl Heaped<Val>, hash: u64) -> Self
+    pub fn new(key: Key, val: impl Into<Guard<Val>>, hash: u64) -> Self
     {
         Self {
             val: Keep::new(val),
@@ -109,11 +109,11 @@ where
         }
     }
 
-    pub fn update(&self, node: &Keep<EntryNode<Key, Val>>) -> Option<Keep<Val>>
+    pub fn update(&self, node: &Keep<EntryNode<Key, Val>>) -> Option<Guard<Val>>
     {
-        if self.key.as_ref() == node.read().key.as_ref()
+        if *self.key == *node.read().key
         {
-            let old = self.val.clone_from(&node.read().val);
+            let old = self.val.swallow(&node.read().val);
             return Some(old);
         }
 
@@ -128,7 +128,7 @@ where
 
                 None =>
                 {
-                    match next.exchange(&next_guard, Some(node.clone()))
+                    match next.cas(&next_guard, Some(node.clone()))
                     {
                         Ok(_old) => return None,
 

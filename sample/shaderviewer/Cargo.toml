@@ -1,0 +1,17 @@
+[package]
+name = "shaderviewer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.100"
+cgmath = "0.18.0"
+ctrlc = { version = "3.5.1", features = ["termination"] }
+image = { version = "0.25.9", features = ["png", "jpeg"] }
+keep = { version = "0.1.0", path = "../../keep" }
+log = "0.4.29"
+plug = { version = "0.1.0", path = "../../plug" }
+plugmap = { version = "0.1.0", path = "../../plugmap" }
+pollster = "0.4.0"
+wgpu = "28.0.0"
+winit = "0.30.12"

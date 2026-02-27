@@ -18,7 +18,7 @@ pub mod prelude
     pub use crate::layer_context::{ConstructLayer, ConstructLayerEx, LayerContext};
     pub use crate::registry::{Layer, Registry};
     pub use crate::resolver::Resolver;
-    pub use keep::Guard;
+    pub use keep::prelude::Guard;
 
     #[cfg(feature = "macro")]
     pub use proc_layer::{build_reg, service};

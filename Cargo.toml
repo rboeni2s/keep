@@ -1,4 +1,3 @@
 [workspace]
-members = ["plug", "plugmap", "keep"]
+members = ["plug", "plugmap", "keep", "sample/shaderviewer"]
 resolver = "2"
-exclude = ["sample"]

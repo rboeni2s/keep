@@ -2,7 +2,7 @@ use crate::{
     PlugMap,
     entry::{Entry, EntryNode},
 };
-use keep::*;
+use keep::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 
@@ -58,7 +58,7 @@ where
 
         loop
         {
-            let (entry_guard, marker) = entry.read_marked();
+            let entry_guard = entry.read();
 
             match &*entry_guard
             {
@@ -66,12 +66,7 @@ where
 
                 Entry::Head(keep) =>
                 {
-                    let (entry_node, node_marker) = keep.read_marked();
-
-                    if entry_node.key() == key
-                    {
-                        todo!()
-                    }
+                    todo!()
                 }
             }
         }
@@ -82,20 +77,22 @@ where
         self.entry_of(hash).read().search(key)
     }
 
-    pub fn insert(&self, entry_node: EntryNode<Key, Val>) -> (Option<Keep<Val>>, bool)
+    pub fn insert(&self, entry_node: EntryNode<Key, Val>) -> (Option<Guard<Val>>, bool)
     {
         let entry = self.entry_of(entry_node.hash());
         let entry_node = Keep::new(entry_node);
 
         loop
         {
-            let (entry_guard, marker) = entry.read_marked();
+            let entry_guard = entry.read();
 
             match &*entry_guard
             {
                 Entry::Empty =>
                 {
-                    if entry.swap_with_marked(marker, &Keep::new(Entry::Head(entry_node.clone())))
+                    if entry
+                        .cas(&entry_guard, Entry::Head(entry_node.clone()))
+                        .is_ok()
                     {
                         let entry_count = self.entry_count.fetch_add(1, Ordering::SeqCst) + 1;
                         return (None, self.resize_needed_up(entry_count));

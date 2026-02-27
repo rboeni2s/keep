@@ -1,11 +1,14 @@
+use std::marker::PhantomData;
+
 use crate::prelude::{ConstructLayer, LayerDispatch, Registry};
-use keep::*;
-use plugmap::DynBuffer;
+use keep::prelude::*;
+use plugmap::RingBuffer;
 
 
-pub struct EventEmitter<E>
+pub struct EventEmitter<E, Err = (), Res = ()>
 {
-    subscribers: DynBuffer<EventSubscriber<E>>,
+    subscribers: RingBuffer<EventSubscriber<E>>, // TODO: change this to something else wtf, this cannot be a ringbuffer
+    _phantom: PhantomData<(Err, Res)>,
 }
 
 
@@ -13,16 +16,12 @@ impl<E> EventEmitter<E>
 {
     pub fn subscribe(&self) -> Guard<EventSubscriber<E>>
     {
-        let keep = Keep::new(EventSubscriber {
-            queue: DynBuffer::new(),
+        let subscriber = Guard::new(EventSubscriber {
+            queue: RingBuffer::with_hint(256), // There can only be 256 subscribers to a event
         });
-        let subscriber = keep;
 
-        let ret = subscriber.read();
-
-        self.subscribers.push_keep(subscriber);
-
-        ret
+        self.subscribers.push(subscriber.clone());
+        subscriber
     }
 
     pub fn emit(&self, event: E)
@@ -39,7 +38,7 @@ impl<E> EventEmitter<E>
 
 pub struct EventSubscriber<E>
 {
-    queue: DynBuffer<Guard<E>>,
+    queue: RingBuffer<Guard<E>>,
 }
 
 
@@ -52,15 +51,18 @@ impl<E> EventSubscriber<E>
 }
 
 
-impl<E, D, Err, Res> ConstructLayer<D, Err, Res> for EventEmitter<E>
+impl<E, D, Err, Res> ConstructLayer<D, Err, Res> for EventEmitter<E, Err, Res>
 where
     E: 'static,
-    EventEmitter<E>: LayerDispatch<D, Error = Err, Response = Res>,
+    Err: 'static,
+    Res: 'static,
+    EventEmitter<E, Err, Res>: LayerDispatch<D, Error = Err, Response = Res>,
 {
     fn construct(_registry: &Registry<D, Err, Res>) -> Self
     {
         Self {
-            subscribers: DynBuffer::new(),
+            subscribers: RingBuffer::with_hint(64), // 64 buffered events
+            _phantom: PhantomData,
         }
     }
 }

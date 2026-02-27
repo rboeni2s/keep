@@ -1,5 +1,5 @@
 use crate::dispatch::{LayerDispatch, NoDispatch};
-use keep::{Guard, Heap};
+use keep::{Guard, heap::Heap};
 use plugmap::PlugMap;
 use std::any::TypeId;
 

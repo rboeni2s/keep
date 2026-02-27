@@ -338,7 +338,7 @@ pub fn service(_attr: TokenStream, input: TokenStream) -> TokenStream
 
             fn deps() -> Vec<LayerContext #generics>
             {
-                vec![#(LayerContext::new::<#layer_field_deps>()),* #(EventEmitter::<#event_dep_names>::ctx()),*]
+                vec![#(LayerContext::new::<#layer_field_deps>(),)* #(EventEmitter::<#event_dep_names>::ctx()),*]
             }
         }
     }

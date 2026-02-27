@@ -1,64 +1,91 @@
-use crate::{
-    Heaped,
-    Keep,
-    alist::Node,
-    heaped::Heap,
-    tracked_atomic::{Mutation, TrackedAtomic},
-};
-use std::ops::Deref;
+use crate::heap::{Heap, HeapRc};
+use std::{marker::PhantomData, ptr::NonNull, sync::atomic::Ordering};
 
 
 pub struct Guard<T>
 {
-    pub(crate) ptr: Heap<Mutation<T>>,
-    pub(crate) node: Heap<Node<Mutation<T>>>,
-    pub(crate) tracked_atomic: Heap<TrackedAtomic<T>>,
+    hrc: NonNull<HeapRc<T>>,
+    _phantom: PhantomData<HeapRc<T>>,
 }
 
 
 impl<T> Guard<T>
 {
-    pub fn new(val: impl Heaped<T>) -> Self
+    /// Creates a new `Guard<T>`
+    pub fn new(val: impl Into<Self>) -> Self
     {
-        Keep::new(val).read()
+        val.into()
+    }
+
+    /// Returns true if `self` is guarding the same value as `other`
+    pub fn compare(&self, other: &Self) -> bool
+    {
+        self.hrc == other.hrc
     }
 }
 
 
-impl<T: std::fmt::Debug> std::fmt::Debug for Guard<T>
+impl<T: Into<HeapRc<T>>> From<T> for Guard<T>
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
+    fn from(hrc: T) -> Self
     {
-        self.ptr.borrow().fmt(f)
+        Guard::from(Heap::from(hrc.into()).as_non_null())
     }
 }
 
 
-impl<T: std::fmt::Display> std::fmt::Display for Guard<T>
+impl<T> From<Box<T>> for Guard<T>
+where
+    Box<T>: Into<HeapRc<T>>,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
+    fn from(hrc: Box<T>) -> Self
     {
-        self.ptr.borrow().fmt(f)
+        Guard::from(Heap::from(hrc.into()).as_non_null())
     }
 }
 
 
-impl<T: PartialEq> PartialEq for Guard<T>
+impl<T> From<Heap<T>> for Guard<T>
+where
+    Heap<T>: Into<HeapRc<T>>,
 {
-    fn eq(&self, other: &Self) -> bool
+    fn from(hrc: Heap<T>) -> Self
     {
-        self.ptr.borrow().eq(other.ptr.borrow())
+        Guard::from(Heap::from(hrc.into()).as_non_null())
     }
 }
 
 
-impl<T> Deref for Guard<T>
+impl<T> From<NonNull<HeapRc<T>>> for Guard<T>
+{
+    fn from(hrc: NonNull<HeapRc<T>>) -> Self
+    {
+        unsafe { hrc.as_ref().inc() };
+
+        Self {
+            hrc,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+
+impl<T> Clone for Guard<T>
+{
+    fn clone(&self) -> Self
+    {
+        Self::from(self.hrc)
+    }
+}
+
+
+impl<T> std::ops::Deref for Guard<T>
 {
     type Target = T;
 
     fn deref(&self) -> &Self::Target
     {
-        unsafe { &*self.ptr.inner() }
+        unsafe { self.hrc.as_ref() }.data()
     }
 }
 
@@ -72,24 +99,32 @@ impl<T> AsRef<T> for Guard<T>
 }
 
 
-impl<T> Clone for Guard<T>
+impl<T> Drop for Guard<T>
 {
-    fn clone(&self) -> Self
+    fn drop(&mut self)
     {
-        Self {
-            ptr: self.ptr,
-            node: self.node.head().insert(self.ptr),
-            tracked_atomic: self.tracked_atomic,
+        if unsafe { self.hrc.as_ref().dec() } == 1
+        {
+            std::sync::atomic::fence(Ordering::Acquire);
+
+            unsafe {
+                let hrc = Box::from_raw(self.hrc.as_ptr());
+                hrc.free_unchecked();
+            }
         }
     }
 }
 
 
-impl<T> Drop for Guard<T>
+impl<T: std::fmt::Debug> std::fmt::Debug for Guard<T>
 {
-    fn drop(&mut self)
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
     {
-        self.node.clear(self.ptr.as_ptr());
-        self.tracked_atomic.try_drop(self.ptr);
+        self.as_ref().fmt(f)
     }
 }
+
+
+// A Guard<T> is Send+Sync if T is Sync
+unsafe impl<T: Sync> Send for Guard<T> {}
+unsafe impl<T: Sync> Sync for Guard<T> {}

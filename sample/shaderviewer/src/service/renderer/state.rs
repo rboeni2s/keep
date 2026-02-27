@@ -1,0 +1,315 @@
+use anyhow::Context;
+use cgmath::Point3;
+use keep::Guard;
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+use wgpu::rwh::{HasDisplayHandle, HasWindowHandle};
+use winit::window::Window as PlatformWindow;
+
+use crate::service::renderer::{
+    buffer::{self, IndexBuffer, VertexBuffer},
+    camera::{Camera, CameraBuffer},
+    pipeline::Pipeline,
+    texture::{AsocTexture, Image, Texture, TextureBindGroupLayout},
+};
+
+
+/// Wrapper struct to extract the window and display handle from `Guard<PlatformWindow>`
+struct WindowWrapper(Guard<PlatformWindow>);
+impl HasDisplayHandle for WindowWrapper
+{
+    fn display_handle(&self) -> Result<wgpu::rwh::DisplayHandle<'_>, wgpu::rwh::HandleError>
+    {
+        self.0.display_handle()
+    }
+}
+
+impl HasWindowHandle for WindowWrapper
+{
+    fn window_handle(&self) -> Result<wgpu::rwh::WindowHandle<'_>, wgpu::rwh::HandleError>
+    {
+        self.0.window_handle()
+    }
+}
+
+
+pub struct RenderState
+{
+    surface: wgpu::Surface<'static>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: Mutex<wgpu::SurfaceConfiguration>,
+    surface_out_of_date: AtomicBool,
+    render_pipeline: Pipeline,
+    vertex_buffer: VertexBuffer<'static>,
+    window: Guard<PlatformWindow>,
+    index_buffer: IndexBuffer,
+    camera: CameraBuffer,
+    texture_bind_group_layout: TextureBindGroupLayout,
+    diffuse_bind_group: wgpu::BindGroup,
+}
+
+
+impl RenderState
+{
+    /// Initializes a wgpu backend for `window`
+    pub async fn new(window: Guard<PlatformWindow>) -> anyhow::Result<Self>
+    {
+        let surface_size = window.inner_size();
+
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::PRIMARY,
+            ..Default::default()
+        });
+
+        let surface_target = wgpu::SurfaceTarget::from(WindowWrapper(window.clone()));
+        let surface = instance.create_surface(surface_target)?;
+
+        // Select a adapter. Try to get a adapter for a discrete gpu first
+        let adapter = match instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await
+        {
+            Ok(adapter) => adapter,
+
+            // If the request didn't work, select any available adapter that supports our surface
+            Err(e) =>
+            {
+                warn!("Failed to select preferred GPU adapter: {e}");
+
+                instance
+                    .enumerate_adapters(wgpu::Backends::all())
+                    .await
+                    .into_iter()
+                    .find(|a| a.is_surface_supported(&surface))
+                    .context("No supported GPU adapter found")?
+            }
+        };
+
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: None,
+                required_features: wgpu::Features::empty(),
+                memory_hints: wgpu::MemoryHints::default(),
+                trace: wgpu::Trace::Off,
+                ..Default::default()
+            })
+            .await?;
+
+        // Select a sRGB surface format, fallback to any available format if srgb is not available
+        let surface_capabilities = surface.get_capabilities(&adapter);
+        let surface_format = surface_capabilities
+            .formats
+            .iter()
+            .find(|f| f.is_srgb())
+            .copied()
+            .unwrap_or(
+                surface_capabilities
+                    .formats
+                    .first()
+                    .copied()
+                    .context("No surface formats available")?,
+            );
+
+        // Select a present mode based on the following priorities:
+        // * 1. Mailbox
+        // * 2. FiFo
+        // * 3. Any present mode
+        let present_mode = {
+            let mut present_mode = surface_capabilities
+                .present_modes
+                .first() // Use the first available format as fallback if neither mailbox nor fifo are available
+                .copied()
+                .context("No available present modes")?;
+
+            let mut fifo_available = false;
+
+            for mode in surface_capabilities.present_modes
+            {
+                match mode
+                {
+                    wgpu::PresentMode::Mailbox =>
+                    {
+                        present_mode = wgpu::PresentMode::Mailbox;
+                        break;
+                    }
+
+                    wgpu::PresentMode::AutoVsync
+                    | wgpu::PresentMode::Fifo
+                    | wgpu::PresentMode::FifoRelaxed => fifo_available = true,
+
+                    _ => (),
+                }
+            }
+
+            if fifo_available && present_mode != wgpu::PresentMode::Mailbox
+            {
+                present_mode = wgpu::PresentMode::AutoVsync;
+            }
+
+            present_mode
+        };
+
+        // Select opaque alpha compositing mode, inherit otherwise
+        let alpha_mode = surface_capabilities
+            .alpha_modes
+            .iter()
+            .find(|a| **a == wgpu::CompositeAlphaMode::Opaque)
+            .copied()
+            .unwrap_or(wgpu::CompositeAlphaMode::Inherit);
+
+        let surface_config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface_format,
+            width: surface_size.width.max(1), // Ensure that the surface width and height are always larger than 0
+            height: surface_size.height.max(1),
+            present_mode,
+            desired_maximum_frame_latency: 2,
+            alpha_mode,
+            view_formats: vec![],
+        };
+
+        // Setup buffers
+        let vertex_buffer = VertexBuffer::new(&device, buffer::SQUARE_VERTICES);
+        let index_buffer = IndexBuffer::new(&device, buffer::SQUARE_INDICES);
+
+        // Create a texture (this is done here just for testing)
+        let image = Image::new(include_bytes!(crate::rel!("/textures/miku.jpg")))?;
+        let texture = Texture::from(AsocTexture::from_image(&device, &queue, image));
+
+        // Create a texture bind group
+        let texture_bind_group_layout = TextureBindGroupLayout::new(&device);
+        let diffuse_bind_group = texture_bind_group_layout.create_bind_group(&device, &texture);
+
+        // Create the camera
+        let camera = CameraBuffer::new(&device, Camera::default());
+
+        // Setup pipeline
+        let render_pipeline = Pipeline::new(
+            &device,
+            surface_format,
+            &texture_bind_group_layout,
+            &camera,
+            vertex_buffer.layout().clone(),
+        )?;
+
+        let info = adapter.get_info();
+        info!("Initialized renderer for adapter:\n{info:#?}");
+
+        let me = Self {
+            surface,
+            device,
+            queue,
+            render_pipeline,
+            config: Mutex::new(surface_config),
+            surface_out_of_date: AtomicBool::new(true),
+            window,
+            vertex_buffer,
+            index_buffer,
+            texture_bind_group_layout,
+            diffuse_bind_group,
+            camera,
+        };
+
+        // Finally perform a initial window resize
+        me.resize(surface_size.width, surface_size.height)?;
+
+        Ok(me)
+    }
+
+    pub fn resize(&self, width: u32, height: u32) -> anyhow::Result<()>
+    {
+        if width == 0 || height == 0
+        {
+            return Err(anyhow::Error::msg(format!(
+                "Invalid width({width}) and/or height({height})"
+            )));
+        }
+
+        let mut config = self.config.lock().unwrap();
+        config.width = width;
+        config.height = height;
+        self.surface.configure(&self.device, &config);
+        self.surface_out_of_date.store(false, Ordering::Release);
+
+        self.camera.update_aspect(&self.device, width, height);
+
+        info!("Surface resize finished ({width}, {height})");
+        Ok(())
+    }
+
+    pub fn render(&self) -> anyhow::Result<()>
+    {
+        if self.surface_out_of_date.load(Ordering::Acquire)
+        {
+            return Ok(());
+        }
+
+        let output = self.surface.get_current_texture()?;
+
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder"),
+            });
+
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Render Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 10.0 / 255.0,
+                        g: 12.0 / 255.0,
+                        b: 14.0 / 255.0,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+
+        let proj_bind_group = self.camera.create_bind_group(&self.device);
+
+        // Set pipeline and buffers
+        self.render_pipeline.set_for_pass(&mut render_pass);
+        render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
+        render_pass.set_bind_group(1, &proj_bind_group, &[]);
+        self.vertex_buffer.set_for_pass(&mut render_pass);
+        self.index_buffer.set_for_pass(&mut render_pass);
+
+        // Draw!
+        self.index_buffer.draw_index(&mut render_pass);
+
+        drop(render_pass);
+        self.queue.submit([encoder.finish()]);
+        output.present();
+
+        Ok(())
+    }
+
+    #[inline]
+    pub fn set_camera_origin(&self, origin: Point3<f32>)
+    {
+        if self.camera.set_origin(origin) != origin
+        {
+            self.camera.rebuild_projection_matrix(&self.device);
+        }
+    }
+}

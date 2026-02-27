@@ -9,7 +9,7 @@ mod resizer;
 mod table;
 
 
-pub use dynbuf::{ConcurrentBuffer, DynBuffer};
+pub use dynbuf::{ConcurrentBuffer, RingBuffer};
 pub use map::PlugMap;
 
 
@@ -38,7 +38,7 @@ mod tests
             "get(..) did not return the current value"
         );
 
-        assert_eq!("Briar", *map.insert(39, "Miku").unwrap().read());
+        assert_eq!("Briar", *map.insert(39, "Miku").unwrap());
 
         assert_eq!(
             Some("Miku"),
